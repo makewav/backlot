@@ -1,14 +1,26 @@
+# build / tooling
+node_modules/
+.vercel/
+*.log
+
+# agent working files (Phase 0 audits, cached Kie docs, verification screenshots)
+notes/
+
+# local env
+.env
+.env.local
+.env*.local
+
+# OS
+.DS_Store
+Thumbs.db
+
+# legacy local-engine artefacts (removed in the port, kept ignored in case a fork has them)
 .venv/
 __pycache__/
 *.pyc
 output/
-*.log
 .proxy-state/
-app/*.bak*
-app/prompts/*.bak*
 .proxy-state-qwen/
-demo/*
-!demo/backlot-demo.mp4
-!demo/backlot-demo-poster.jpg
-SUBMISSION.md
 launch.log
+SUBMISSION.md
