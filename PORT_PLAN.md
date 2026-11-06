@@ -1,10 +1,11 @@
 # PORT_PLAN.md — Backlot → Vercel + Kie AI
 
-**Phase 0 (read and report).** Read-only audit of the upstream repo; no app code changed yet.
-Written 2026-11-06 by the agent for @DO. **Waiting for your go-ahead before Phase 1.**
+**Phase 0 audit + Phase 1 (revised).** The audit is complete; Phase 1 now strips the local engine while
+**keeping every user-facing feature**, each re-pointed at a verified Kie model (§4 conversion map).
+Written 2026-11-06 for @DO. Phase 2 (the Kie layer) starts next.
 
 - Snapshot audited: `github.com/Arfolomew/backlot` @ `main` = `c28a493` ("Audio: takes queue as background jobs…", 2026-10-28), clean tree, 116 files / ~83 MB.
-- **No fork URL was supplied**, so I read the upstream tree (identical content) into `src_upstream/`. Phase 1 will work in your fork — see question 1.
+- Fork: **https://github.com/makewav/backlot** (`makewav`, public) — created because no fork URL was supplied; the original repo is never pushed to.
 - Full raw inventories (line-cited) are in `notes/`: `01-server-routes.md` (564 lines), `02-ui-inventory.md` (354), `03-engine-inventory.md` (693). Cached Kie OpenAPI docs: `notes/kie/`.
 
 ---
@@ -74,7 +75,46 @@ Kie H3 **always generates audio** (cannot be turned off) and returns `resultJson
 
 ---
 
-## 4. Feature-by-feature fate
+## 4. Conversion map (revised 2026-11-06 — features are CONVERTED to hosted models, not dropped)
+
+The port keeps every user-facing feature from the repo. Nothing is deleted except the local engine
+(ComfyUI server/adapter/workflows/setup/launcher). Each feature is re-pointed at a verified Kie model;
+"Tier" is how faithful that is.
+
+| Feature in the repo | Original engine | Hosted path (verified model id) | Tier |
+|---|---|---|---|
+| Text to video | H3 FL2VA | `minimax-h3/text-to-video` (aspect_ratio, duration 4–15, resolution 768P/2K) | exact (same model family) |
+| Image to video | H3 FL2VA, start frame | `minimax-h3/image-to-video` (`first_frame_url`, optional `last_frame_url`) | exact |
+| Reference mode (≤9 images, ≤3 audio) | H3 Ref2VA | `minimax-h3/reference-to-video` (`reference_image_urls[]`, `reference_video_urls[]`, `reference_audio_urls[]`) | exact family |
+| 360 Orbit (1 or 3 photos, looping) | Ref2VA + ORB360 LoRA + fixed 124 frames | `minimax-h3/reference-to-video` with the repo's verbatim orb360 prompt (the LoRA trigger text is kept) — no LoRA, so the turntable motion is a prompt request, not a trained behaviour | approximate |
+| Camera Motion LoRA (27 Moves presets) | Camera Motion LoRA, trigger word | prompt-only on H3 **or** real motion transfer: `kling/motion-control` (kling-2.6 / 3.0; `input_urls` + `video_urls` + `character_orientation` + `mode`) / `wan/2-2-animate-move` (`image_url` + `video_url`), using the repo's own rendered move previews as the motion reference | approximate (prompt) / strong-approx (motion reference) |
+| Latent chaining (Motion Context) | latent continuation in ComfyUI | frame chaining: browser extracts the last frame → `minimax-h3/image-to-video` `first_frame_url`; longer continuation via `wan/2-7-image-to-video` `first_clip_url`, `pixverse/extend`, `grok-imagine/extend` | approximate (frame, not latent) |
+| Slow motion 2× | RIFE + `atempo=0.5` | no frame-interpolation model exists on Kie; browser-side 0.5× re-encode only (duplicated frames) | **not reproducible as before** |
+| Frame interpolation (RIFE) | RIFE 4.9 | no VFI model in the catalogue | **not available** |
+| Text to image (Krea 2 / Qwen 2.1 / MOSS) | 3 local models | `qwen/text-to-image`, `seedream/4.5-text-to-image`, `google/nano-banana`, `ideogram/v3-text-to-image`, `gpt-image` | exact (choose per look) |
+| Image to image | Krea img2img, denoise | `qwen/image-to-image` (`strength`), `flux2/flex-image-to-image`, `ideogram/v3-remix` (`strength`) | exact |
+| Instruction edit | Qwen-Edit-2511 | `qwen/image-edit`, `seedream/4.5-edit`, `google/nano-banana-edit` | exact |
+| Identity edit | Krea Identity Edit LoRA | `ideogram/character` + `ideogram/character-edit` (dedicated character-consistency models), or nano-banana-edit with refs | strong approximation |
+| Style reference | Krea style LoRA | `ideogram/v3-remix` (`strength`), `qwen/image-to-image` (`strength`), `flux2/flex-image-to-image` | approximate |
+| Angles (96 positions) | Qwen-Edit + fal Multiple-Angles LoRA | the same angle-token matrix sent as a prompt to `google/nano-banana-edit` / `qwen/image-edit` | approximate (no LoRA) |
+| Layout poster (MOSS bbox JSON) | MOSS layout contract | `ideogram/v3-text-to-image` / `gpt-image` typography, with the layout form composed into a poster prompt | approximate (no bbox control) |
+| Token weighting | `Krea2PromptWeight` node | per-model: pass `(word:w)` where the provider supports it, otherwise strip the markers | approximate |
+| Upscale to 4K (image) | SeedVR2 | `topaz/image-upscale` (`upscale_factor`) | exact |
+| Video upscale | SeedVR2 video / ESRGAN | `topaz/video-upscale` (`upscale_factor` 1/2/4) | exact |
+| Transparent PNG / cutout | Qwen RGBA / Cutout app | `recraft/remove-background` | exact |
+| Vertical crops | PIL crop + SeedVR2 | browser canvas + optional Topaz upscale | exact |
+| Character Swap (Apps) | SAM 3.1 + h3-relay + H3 LoRA | candidate: `kling/motion-control`, `wan/2-2-animate-replace`, `kling/v3-omni-transformation` — needs a spike before promising it | candidate |
+| Cinema multi-shot | H3 composed prompt | H3 prompt as before, or `kling/v3-omni-reference-to-video` (`multi_prompt`, `elements`, `customize_multi_shots`) for true multi-shot | approximate |
+| Audio (song / SFX / mastering) | YuE2 3B / Stable Audio 3 | speech only verified (`elevenlabs/text-to-speech-*`, `gemini-omni-audio`); no music-generation model verified in this catalogue pass | not verified |
+
+**New facts that shape the plan** (from the catalogue pass): Kie exposes motion transfer (`kling/motion-control`,
+`wan/2-2-animate-move`), video continuation (`wan/2-7-image-to-video` `first_clip_url`, `pixverse/extend`,
+`grok-imagine/extend`), dedicated character models (`ideogram/character*`), typography models
+(`ideogram/v3-text-to-image`, `gpt-image`), multi-shot reference-to-video (`kling/v3-omni-reference-to-video`) —
+but **no frame-interpolation model**. The repo's 30 rendered move previews are now a strategic asset: they are
+real motion references for the motion-transfer path.
+
+### 4.0 Original audit tables (superseded — kept as the audit record)
 
 "Kie model" is the verified id above; "—" means no verified hosted equivalent. This table covers **everything in the repo**, not only the brief's v1 list, because the repo has more features than the audit knew.
 
@@ -175,7 +215,7 @@ rate_events(id bigserial pk, at timestamptz, route text) -- rate limiting
 4. **Kie's inputs are not the repo's inputs.** H3 t2v takes `aspect_ratio` + integer `duration` 4–15 + `resolution` 768P/2K — no width/height, no steps, no seed, no camera-LoRA toggle. The Video screen's duration slider (2–10 s, 17n+5 frames), seed field, steps, and camera toggle have to be replaced with the Kie option set; that is a real UI change, not just a URL swap.
 5. **Kie result links expire in ~20 minutes** (verified in the common API docs: download links valid 20 minutes; some model pages say 1 hour; generated media kept 14 days; Kie's own uploads deleted after 24 h). Every result must be copied into Blob **immediately** on the first success observation — not "eventually". The status handler therefore does the copy before marking a job `done` (idempotent, safe to run twice), and the optional callback does the same. A job that finished while nobody polled for over 20 minutes may be unrecoverable; the UI must say so instead of showing a dead URL.
 6. **Base64 request bodies vs Vercel's ~4.5 MB cap is the single biggest server change.** The UI sends up to 9 images + 3 audio clips in one JSON body today, and every file goes through `FileReader.readAsDataURL`. Direct-to-Blob upload is mandatory, not optional.
-7. **Nine of the repo's sixteen render capabilities have no verified hosted equivalent** (ORB360, camera-motion, SAM3 character swap, Krea style/identity, MOSS layout, LTX-2.5, SeedVR2, RealESRGAN/RIFE, YuE2/SA3). The port is therefore a *much smaller* app than the repo. That is expected by the brief's triage, but the repo made it look like a thin wrapper.
+7. **Parity tiers, not deletions.** Every requested feature is converted (§4): exact where a hosted model matches (t2v, i2v, reference mode, text/image/edit, upscale, cutout, crops), approximate where a local LoRA/custom node cannot travel (360 Orbit, camera-motion LoRA moves, identity/style reference, angles, layout, token weighting), and genuinely absent only where no hosted capability exists at all (**frame interpolation / RIFE**; audio music generation unverified). Motion transfer (`kling/motion-control`, `wan/2-2-animate-move`) and video continuation (`wan/2-7` `first_clip_url`, `pixverse/extend`) give the camera-move and chaining features a real hosted path instead of a dead end.
 8. **Progress semantics change.** Today's bar is sampler-step based (`step X/Y · node A/B`) from SDK events. Kie exposes coarse states (`waiting`, `queuing`, `generating`, `success`, `fail`) plus a numeric `progress`. The bar becomes progress/queue-based, and the "estimated time" copy has to go.
 9. **Hallucination risk in the UI copy.** The page carries local-hardware claims ("on this card", "16 GB card", "local", "first run loads a 10 GB model", "ComfyUI 0.42"). All of it must be rewritten; the brief's "keep the look and feel" means styling, not claims.
 10. **The four H3 prompt dialects are load-bearing.** FL2VA wants an alignment line first, Ref2VA a six-section 350–500-word prompt, Cinema an `integrated_multimodal_description / overall_soundscape / non_diegetic_music` block, Moves a comma list with a LoRA trigger. If Cinema/Moves come back, the composers are portable text, but the *model behaviour* behind Kie's H3 is unverified.
@@ -190,7 +230,7 @@ rate_events(id bigserial pk, at timestamptz, route text) -- rate limiting
 ## 7. Decisions I need from you
 
 1. **Fork.** No fork URL was in the brief. `gh` is logged in here as **`makewav`** with `repo` scope. May I create `makewav/backlot` (public fork of `Arfolomew/backlot`) and work/push there, or will you paste your fork URL? I will never push to the original.
-2. **Which tabs survive v1.** Plan A (recommended): ship **Video** and **Image** tabs only; hide Moves / Cinema / Apps / Audio behind a "v2" note (keeps the shell visibly intact). Plan B: delete the four panels and their JS outright. Plan C: keep Cinema in v1 (it is prompt-only and cheap) — say so and I will include it.
+2. **Tabs (resolved).** All six tabs stay. Video (text / image / reference / 360 orbit), Image (text / image-to-image / reference / identity / edit / angles / layout + transparent, steps, token weighting, crop, upscale), Moves (camera presets, with the LoRA moves re-pointed at motion transfer where we can), Cinema (prompt composer + multi-shot), Apps (Angles, Relight, Cutout, 4K Upscale, 360 Orbit, Character Swap — each mapped or flagged "candidate"), Audio. Nothing is deleted: features are converted, and any feature that cannot be hosted faithfully is disabled with a clear reason rather than removed.
 3. **Stills model choice** (all three verified on Kie): `qwen/text-to-image` + `qwen/image-edit` (closest to today's Qwen lineage, one provider), `seedream/4.5-*` (newer, likely stronger), or `google/nano-banana*` (edit-first). I will run one cheap job per family in Phase 5 if you allow the spend, then lock it.
 4. **Keys and accounts.** I need (a) a Kie API key, (b) a Vercel project connected to the fork (the Vercel CLI is **not** installed here and there is no Vercel session — connecting the repo in the Vercel dashboard is the simplest path; previews then build on push), (c) a Blob store and a Postgres database (Vercel Blob + Neon/Vercel Postgres). Until (b)/(c) exist, Phase 1–2 code can still be written and reviewed. What is the **test-spend ceiling** (e.g. USD 2–5) and may I run one cheap job per feature?
 5. **Video option mapping** (forced by Kie): aspect-ratio pills (21:9/16:9/4:3/1:1/3:4/9:16) + integer duration 4–15 s + resolution 768P/2K, replacing width/height + 2–10 s slider + steps/seed/camera toggle. Confirm that is acceptable, and whether 2K should be the default (Kie's default) or 768P (cheaper).

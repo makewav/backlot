@@ -6,22 +6,27 @@ This is the Vercel + Kie AI port of [the original Backlot](https://github.com/Ar
 local ComfyUI studio. The original is MIT-licensed; the licence and copyright notice are kept in
 [LICENSE](LICENSE). This fork is not affiliated with, endorsed by, or sponsored by Higgsfield or Comfy Org.
 
-**Status: v1 port in progress.** The local engine is stripped (Phase 1); the Kie layer, screens, spend
-protection and the preview deployment follow in Phases 2–6. See [PORT_PLAN.md](PORT_PLAN.md) for the full
-audit, feature fate table and phase plan.
+**Status: v1 port in progress.** The local engine is stripped (Phase 1) and every feature is kept; each one
+is being re-pointed at a hosted Kie model. The Kie layer, screens, spend protection and the preview
+deployment follow in Phases 2–6. See [PORT_PLAN.md](PORT_PLAN.md) for the audit, the feature → model
+conversion map and the parity notes.
 
-## What v1 will do
+## What it does
 
-- **Video** — text to video and image to video with MiniMax H3 (with generated audio).
-- **Image** — text to image, image to image and instruction edits.
-- **Upscale** — image and video upscaling.
-- **Cutout** — transparent PNGs via background removal.
-- **Vertical crops** — crop a still to 9:16 or 4:5 in the browser.
+Six tabs, all converted from the local build to hosted models:
 
-Dropped in the port because they need a local model or GPU tool (LoRAs, SAM 3.1, ffmpeg, local checkpoints):
-360 Orbit, the Camera Motion LoRA moves, Character Swap, Krea style/identity edit, MOSS layout posters,
-LTX-2.5, SeedVR2/RealESRGAN upscalers, RIFE slow motion, YuE2 / Stable Audio music, latent chaining.
-Reference-to-video (Kie has it) is a v2 candidate.
+- **Video** — text to video, image to video, reference mode (up to 9 images and 3 audio clips),
+  360 orbit, camera-motion moves, latent-style chaining (continue from a captured last frame).
+- **Image** — text to image, image to image, style reference, identity edit, instruction edit,
+  camera angles, poster layout, transparent PNG, token weighting, vertical crops, upscale.
+- **Moves** — the 30 one-click camera moves and effects; LoRA-driven moves use a rendered motion
+  reference where the hosted model supports motion transfer.
+- **Cinema** — pickers compose a multi-shot prompt; renders as one clip.
+- **Apps** — Angles, Relight, Cutout, 4K Upscale, 360 Orbit, Character Swap.
+- **Audio** — song and sound-effect panels (hosted audio path not yet verified).
+
+Where a local LoRA or custom node has no hosted equivalent, the feature still ships and is marked
+approximate in the port report; frame interpolation is the one capability with no hosted path.
 
 ## How it is built
 

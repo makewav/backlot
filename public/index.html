@@ -283,8 +283,12 @@
     <div class="tabs" id="tabs">
       <div class="tab active" data-tab="video">VIDEO</div>
       <div class="tab" data-tab="image">IMAGE</div>
+      <div class="tab" data-tab="moves">MOVES</div>
+      <div class="tab" data-tab="cinema">CINEMA</div>
+      <div class="tab" data-tab="apps">APPS</div>
+      <div class="tab" data-tab="audio">AUDIO</div>
     </div>
-    <div class="status"><span class="dot" id="dot"></span><span id="statustxt">checking server&hellip;</span></div>
+    <div class="status"><span class="dot" id="dot"></span><span id="statustxt">connecting…</span></div>
   </header>
 
   <div class="main">
@@ -293,25 +297,57 @@
 
       <label class="first">Pick a Model</label>
       <div class="modelpick" id="modelpick">
-        <div class="ratio active" data-model="minimax">MiniMax H3</div>
+        <div class="ratio active" data-model="minimax">MiniMax</div>
+        <div class="ratio" data-model="ltx25">LTX-2.5</div>
       </div>
-      <div class="hint" id="modelhint">Text and image to video with audio.</div>
+      <div class="hint" id="modelhint">MiniMax H3 · local · text and image to video with audio.</div>
 
       <label>Mode</label>
       <div class="ratios" id="vmode">
         <div class="ratio active" data-mode="t2v">Text</div>
         <div class="ratio" data-mode="i2v">Image</div>
+        <div class="ratio" data-mode="ref">Reference</div>
+        <div class="ratio" data-mode="orbit">360 Orbit</div>
       </div>
+      <div id="orbit-box" class="hint" style="display:none"><b>360 Orbit</b> (ORB360 LoRA). The camera circles the subject
+        once, clockwise, and lands back on the first frame, so the clip loops. Add your photo in the picker below.
+        <b>1 photo</b> works, but H3 has to invent the back side and can ADD things that were never there (a test run added a water glass), so check every frame before a client sees it; <b>3 photos</b> (front, then about 120&deg; and 240&deg;
+        around, clockwise) give a clean orbit. No prompt needed, length is fixed at 5.2 s, about 12 min.
+        Size follows the aspect button: 16:9 renders 1152&times;768, 9:16 832&times;1024, 1:1 800&times;800.</div>
 
       <div id="i2v-box" style="display:none">
         <label>Input image</label>
         <input type="file" id="i2vfile" accept="image/*">
-        <div class="hint">The first frame of the clip. It is center-cropped to the video shape you pick, never stretched.</div>
+        <div class="hint">The first frame of the clip. H3 holds it far better than it invents one.
+          It is center-cropped to the video shape you pick, never stretched.</div>
         <div class="hint" id="i2vcrop" style="color:var(--accent, #ff9d5c)"></div>
       </div>
 
+      <div id="ref-box" style="display:none">
+        <label>Reference images <span class="hint" style="text-transform:none">(up to 9)</span></label>
+        <input type="file" id="reffiles" accept="image/*" multiple style="display:none">
+        <div class="reflist" id="reflist"></div>
+        <div class="hint" id="refcount">Add them one at a time or several at once &mdash; each new pick is <b>added</b>, never replaces what is there. The number on each thumbnail is its <b>&lt;Picture N&gt;</b>. Use &#9664; &#9654; to reorder, &times; to drop one.</div>
+
+        <div id="ref-extras">
+        <label style="margin-top:14px">Reference audio <span class="hint" style="text-transform:none">(optional, up to 3)</span></label>
+        <input type="file" id="refaudiofiles" accept="audio/*,.wav,.mp3,.flac,.m4a,.ogg,.opus" multiple style="display:none">
+        <div id="refaudiolist"></div>
+        <div class="hint">Voice timbre for a speaking subject, or a soundscape to match. Cite it in the prompt as <b>&lt;Audio N&gt;</b> and put the spoken line in <b>&lt;d&gt;...&lt;/d&gt;</b> tags. Trim the clip to roughly the length of the line.</div>
+
+        <label style="margin-top:14px">Chain project <span class="hint" style="text-transform:none">(keeps each video's chain separate)</span></label>
+        <input type="text" id="chainproject" list="chainlist" placeholder="h3_context" value="h3_context" autocomplete="off">
+        <datalist id="chainlist"></datalist>
+        <div class="hint" id="chainstatus">Pick an existing project or type a new name. Each project gets its OWN latent folder, so starting a new video can never overwrite another one's chain.</div>
+
+        <label style="margin-top:14px">Chain this clip <span class="hint" style="text-transform:none">(Motion Context)</span></label>
+        <input type="number" id="chainindex" min="0" max="999" step="1" value="0">
+        <div class="hint">0 = off. Set <b>1</b> for the first clip of a sequence, <b>2</b> for the next, and so on. Clip N continues clip N&minus;1 in latent space, so motion and sound carry across the join instead of restarting. Pins 22 frames, which come off the front of the delivered clip, so each chained clip renders a little longer.</div>
+        </div><!-- /ref-extras -->
+      </div>
+
       <label>Prompt <span class="browse" id="tmpl" style="float:right; margin:0">insert template</span></label>
-      <textarea id="prompt" placeholder="Describe the shot and the motion. Lock the composition, then give timecoded beats."></textarea>
+      <textarea id="prompt" placeholder="Describe the shot and the motion. H3 rewards long, specific prompts: lock the composition, then give timecoded beats."></textarea>
 
       <label>Aspect ratio</label>
       <div class="ratios" id="vratio">
@@ -325,12 +361,28 @@
       <div class="slider-row">
         <input type="range" id="seconds" min="2" max="10" step="0.5" value="5">
       </div>
-      <div class="hint" id="lenhint">The real length lands near your pick, rounded to the model&rsquo;s frame grid.</div>
+      <div class="hint" id="lenhint">H3 snaps to a 17n+5 frame grid, so the real length lands near your pick. Measured at 1344&times;768: 5s &asymp; 7.5 min, 10s &asymp; 15-20 min. The model supports 15s, but that runs ~40 min on this card so the slider stops at 10.</div>
+
+      <label>Camera Motion LoRA</label>
+      <div class="chk" style="margin-top:0">
+        <input type="checkbox" id="camera">
+        <label for="camera" style="margin:0; cursor:pointer">control the camera move</label>
+      </div>
+      <div class="slider-row" id="camrow" style="display:none; margin-top:8px">
+        <input type="range" id="camstr" min="0.6" max="1.2" step="0.05" value="1.0">
+        <span class="val" id="camstrv">1.00</span>
+      </div>
+      <div class="hint" id="camhint" style="display:none">
+        0.8 gentle &middot; 1.0 definite &middot; above 1.2 goes unstable. Adds
+        &ldquo;camera motion,&rdquo; to the front of your prompt, which is the trigger word.
+        Describe the move: push-in, pull-back, orbit, tracking, aerial, crane, pan, macro.
+      </div>
 
       <details>
         <summary>Advanced</summary>
         <label>Seed (&minus;1 = random)</label>
         <input type="number" id="seed" value="-1">
+        <div class="hint">Steps 8, head-chunks 16 and the CPU text encoder are fixed to the proven recipe.</div>
       </details>
 
       <button class="gen" id="gen">Generate Video</button>
@@ -340,18 +392,177 @@
         <button class="upscale" id="upscale">Upscale</button>
         <input type="file" id="vidfile" accept="video/mp4,video/*">
         <span class="browse" id="browse">Browse&hellip; (upscale any video)</span>
-        <div class="hint">Renders the clip at a larger size and keeps the audio.</div>
+        <button class="upscale" id="slowmo" style="margin-top:10px">Slow down 2&times;</button>
+        <input type="file" id="slowfile" accept="video/mp4,video/*" style="display:none">
+        <span class="browse" id="slowbrowse">Browse&hellip; (slow down any video)</span>
+        <div class="hint">Doubles the length (a 5 s orbit becomes 10 s). RIFE draws a new frame between every pair, so
+          it stays smooth instead of stuttering; sound is stretched to match without going deep. About a minute.</div>
+        <div class="chk">
+          <input type="checkbox" id="interp">
+          <label for="interp" style="margin:0; cursor:pointer">also double the frame rate (RIFE)</label>
+        </div>
+        <div class="chk">
+          <input type="checkbox" id="vfast">
+          <label for="vfast" style="margin:0; cursor:pointer">fast mode (old RealESRGAN, softer)</label>
+        </div>
+        <div class="hint">SeedVR2 to 1080p: real skin and detail, keeps the audio. About 5&ndash;6 min per 5 s clip
+          (fast mode: about 1 min, doubles the size but looks smoother/plastic).</div>
       </div>
      </div><!-- /video-panel -->
+
+     <div id="apps-panel" style="display:none; flex-direction:column; flex:1; min-height:0">
+      <label class="first">Apps</label>
+      <div class="hint">One input, one job, one result. Each app is a saved recipe on the models already installed.</div>
+      <div class="appgrid" id="appgrid"></div>
+      <div class="appform" id="appform" style="display:none"></div>
+      <button class="gen" id="agen" style="display:none">Run</button>
+      <div class="err" id="aerr"></div>
+     </div><!-- /apps-panel -->
+
+     <div id="audio-panel" style="display:none; flex-direction:column; flex:1; min-height:0">
+      <label class="first">Engine</label>
+      <div class="modelpick" id="aupick">
+        <div class="ratio active" data-engine="song">Song (YuE2)</div>
+        <div class="ratio" data-engine="sfx">Sound FX (Stable Audio 3)</div>
+      </div>
+      <div class="hint" id="auhint">Lyrics and a style line in, a full song with vocals out. 48 kHz, about 15 s per 30 s of song.</div>
+      <div id="au-song">
+        <label>Song title</label>
+        <input type="text" id="autitle" placeholder="Harbor Lights" maxlength="80">
+        <div class="hint">Names the file and the track tag. Leave blank for a timestamped name.</div>
+        <label>Style</label>
+        <textarea id="austyle" class="austyle" rows="2" placeholder="pop, upbeat, female vocal, bright synths, 120 bpm"></textarea>
+        <label>Lyrics</label>
+        <textarea id="aulyrics" placeholder="[verse]&#10;Morning light on the harbor wall&#10;[chorus]&#10;We sail on, we sail on"></textarea>
+        <div class="hint">Section tags like [verse], [chorus], [bridge] steer the structure. For an instrumental, pick the Instrumental flavor and give section tags only.</div>
+        <label>Plan</label>
+        <div class="ratios" id="auplan">
+          <div class="ratio active" data-plan="off">Off</div>
+          <div class="ratio" data-plan="full">Full</div>
+          <div class="ratio" data-plan="melody">Melody</div>
+        </div>
+        <div class="hint">Off sings the lyrics straight (clearest delivery, best for rap). Full writes a section plan and melody first. Melody plans only.</div>
+        <label>Flavor (optional)</label>
+        <div class="auchips" id="auloras"></div>
+        <div class="hint" id="aulorahint"></div>
+        <div class="hint">YuE2 LoRAs at their authors&rsquo; default strengths. Pick one voice and one genre at most; stacking more muddies the mix.</div>
+      </div>
+      <div id="au-sfx" style="display:none">
+        <label>Describe the sound</label>
+        <textarea id="auprompt" placeholder="A heavy wooden door creaks open slowly, old iron hinges, stone hallway reverb"></textarea>
+        <div class="hint">One sound, one place, one texture. Works for music beds too (&ldquo;warm lo-fi piano loop, vinyl crackle, 80 bpm&rdquo;). Up to 45 s.</div>
+      </div>
+      <label>Length <span class="val" id="aulenv" style="float:right">60 s</span></label>
+      <div class="slider-row"><input type="range" id="aulen" min="10" max="240" step="5" value="60"></div>
+      <label>Seed (-1 = random)</label>
+      <input type="number" id="auseed" value="-1">
+      <label>Takes <span class="hint" style="text-transform:none">(each one queues and renders in turn)</span></label>
+      <div class="ratios" id="autakes">
+        <div class="ratio active" data-n="1">1</div><div class="ratio" data-n="2">2</div>
+        <div class="ratio" data-n="3">3</div><div class="ratio" data-n="4">4</div>
+      </div>
+      <button class="gen" id="augen">Generate Audio</button>
+      <div class="err" id="auerr"></div>
+      <div class="auqueue" id="auqueue"></div>
+     </div><!-- /audio-panel -->
+
+     <div id="cinema-panel" style="display:none; flex-direction:column; flex:1; min-height:0">
+      <label class="first">Cinema Studio</label>
+      <div class="hint">Direct the look with pickers, describe the scene once, pick a pacing. Backlot writes the multi-shot prompt in H3's own format (shots, cut times, camera moves) and renders it as ONE clip, so the subject stays consistent across cuts.</div>
+
+      <label>Scene</label>
+      <textarea id="cscene" placeholder="Who, what, where. Example: a samurai in crimson armor draws a katana on a sea cliff at dawn, cherry petals streaming past, a fleet of red-sailed junks on the swells below"></textarea>
+
+      <label>Genre</label><div class="pickrow" id="cgenre"></div>
+      <label>Era</label><div class="pickrow" id="cera"></div>
+      <label>Light</label><div class="pickrow" id="clight"></div>
+      <label>Camera</label><div class="pickrow" id="ccamera"></div>
+      <label>Lens</label><div class="pickrow" id="clens"></div>
+      <label>Aperture</label><div class="pickrow" id="caperture"></div>
+      <label>Pacing</label><div class="pickrow" id="cpacing"></div>
+      <div class="cuts" id="ccuts"></div>
+
+      <details>
+        <summary>Custom shots (optional)</summary>
+        <textarea id="cshots" placeholder="One line per shot, in order. Leave empty and every cut reframes the scene above."></textarea>
+        <div class="hint">Shots beyond the pacing's cut count are ignored; missing ones fall back to the scene.</div>
+      </details>
+
+      <label>Start from a photo <span class="hint" style="display:inline">(optional)</span></label>
+      <input type="file" id="cimgfile" accept="image/*">
+      <div class="hint" id="cimghint">With a photo the first shot starts on it (Image to Video).</div>
+
+      <label>Aspect ratio</label>
+      <div class="ratios" id="cratio">
+        <div class="ratio active" data-w="1344" data-h="768">16:9</div>
+        <div class="ratio" data-w="768" data-h="1344">9:16</div>
+        <div class="ratio" data-w="1024" data-h="1024">1:1</div>
+      </div>
+
+      <label>Duration <span class="val" id="csecv" style="float:right">8s</span></label>
+      <div class="slider-row"><input type="range" id="cseconds" min="3" max="10" step="0.5" value="8"></div>
+
+      <label>Prompt <span class="browse" id="ccompose" style="float:right; margin:0">compose from the pickers</span></label>
+      <textarea id="cprompt" placeholder="Press 'compose from the pickers' to write the prompt. You can edit it before rendering."></textarea>
+
+      <details>
+        <summary>Advanced</summary>
+        <label>Seed (&minus;1 = random)</label>
+        <input type="number" id="cseed" value="-1">
+      </details>
+
+      <button class="gen" id="cgen">Render Scene</button>
+      <div class="err" id="cerr"></div>
+     </div><!-- /cinema-panel -->
+
+     <div id="moves-panel" style="display:none; flex-direction:column; flex:1; min-height:0">
+      <label class="first">Pick a Move</label>
+      <div class="hint">One click per camera move or effect. Camera moves ride the Camera Motion LoRA; effects are plain prompts. Click a card to play its preview on the right.</div>
+      <div class="movefilter" id="movefilter"></div>
+      <div class="movegrid" id="movegrid"><div class="hint">loading moves&hellip;</div></div>
+      <div class="moveinfo" id="moveinfo" style="display:none"></div>
+
+      <label>Subject</label>
+      <textarea id="msubject" placeholder="Who or what is in the shot, and where. One or two sentences. Example: a red vintage pickup parked on a desert road at golden hour, dust in the air"></textarea>
+      <div class="hint">The move itself is added for you. Describe the scene, not the camera.</div>
+
+      <label>Start from a photo <span class="hint" style="display:inline">(optional)</span></label>
+      <input type="file" id="mimgfile" accept="image/*">
+      <div class="hint" id="mimghint">Leave empty for text to video. With a photo the clip starts on it (Image to Video), center-cropped to the shape below.</div>
+
+      <label>Aspect ratio</label>
+      <div class="ratios" id="mratio">
+        <div class="ratio active" data-w="1344" data-h="768">16:9</div>
+        <div class="ratio" data-w="768" data-h="1344">9:16</div>
+        <div class="ratio" data-w="1024" data-h="1024">1:1</div>
+      </div>
+
+      <label>Duration <span class="val" id="msecv" style="float:right">5s</span></label>
+      <div class="slider-row">
+        <input type="range" id="mseconds" min="2" max="10" step="0.5" value="5">
+      </div>
+      <div class="hint">Each move has its own default. About 7 min for 5 s at 1344&times;768 on a 16 GB card.</div>
+
+      <details>
+        <summary>Advanced</summary>
+        <label>Seed (&minus;1 = random)</label>
+        <input type="number" id="mseed" value="-1">
+      </details>
+
+      <button class="gen" id="mgen">Generate with this Move</button>
+      <div class="err" id="merr"></div>
+     </div><!-- /moves-panel -->
 
      <div id="image-panel" style="display:none; flex-direction:column; flex:1; min-height:0">
 
       <label class="first">Model</label>
       <div class="modelpick" id="imodel">
-        <div class="ratio active" data-model="image">Image model</div>
+        <div class="ratio active" data-model="krea2">Krea 2 Turbo</div>
+        <div class="ratio" data-model="qwen21">Qwen 2.1</div>
+        <div class="ratio" data-model="moss">MOSS Text</div>
       </div>
-      <div class="hint" id="imodelhint">Text and image generation, with optional real-alpha PNG output.</div>
-      <div class="chk" id="itrans-box">
+      <div class="hint" id="imodelhint">Flux2-family, fp8, local. Distilled turbo, so there is no CFG and no negative prompt.</div>
+      <div class="chk" id="itrans-box" style="display:none">
         <input type="checkbox" id="itrans">
         <label for="itrans" style="margin:0; cursor:pointer">Transparent background (PNG with real alpha)</label>
       </div>
@@ -360,7 +571,28 @@
       <div class="ratios" id="imode">
         <div class="ratio active" data-mode="text">Text</div>
         <div class="ratio" data-mode="img2img">Image to Image</div>
+        <div class="ratio" data-mode="reference">Reference</div>
+        <div class="ratio" data-mode="identity">Identity</div>
         <div class="ratio" data-mode="edit">Edit</div>
+        <div class="ratio" data-mode="angles">Angles</div>
+        <div class="ratio" data-mode="layout" style="display:none">Layout</div>
+      </div>
+
+      <div id="imoss-layout" style="display:none">
+        <label>Headline</label>
+        <input type="text" id="ml-headline" placeholder="FITZGERALD'S IRISH TAVERN">
+        <label>Subhead</label>
+        <input type="text" id="ml-subhead" placeholder="Weekday Specials">
+        <label>Lines (one per line)</label>
+        <textarea id="ml-lines" rows="4" placeholder="MONDAY  $3 Guinness Pints&#10;TUESDAY  Half-Price Wings"></textarea>
+        <label>Illustration</label>
+        <input type="text" id="ml-art" placeholder="Hand-drawn ink pint glass beside a plate of wings">
+        <label>Footer</label>
+        <input type="text" id="ml-footer" placeholder="DOWNTOWN NEW PORT RICHEY">
+        <label>Web address</label>
+        <input type="text" id="ml-url" placeholder="fitzgeraldstavern.com">
+        <div class="hint">Every filled field becomes one block, stacked top to bottom in this order; empty fields drop out.
+          The prompt above describes the whole poster (colors, paper, mood). Each word renders exactly as typed, so proof-read here, not after.</div>
       </div>
 
       <div id="isrc-box" style="display:none">
@@ -368,23 +600,92 @@
         <input type="file" id="isrcfile" accept="image/*">
         <div class="hint"><span class="browse" id="isrcscreen" style="margin:0">use the image on screen</span> &mdash; or click any image in the strip below, then this.</div>
         <img id="isrcthumb" style="display:none; width:100%; border-radius:8px; margin-top:6px">
-        <div class="hint" id="isrchint">Image to Image keeps the input&rsquo;s shape; Edit works at a fixed output size.</div>
+        <div class="hint" id="isrchint">Image to Image keeps the input&rsquo;s shape at ~2 MP, Edit at ~1 MP. Reference and Identity use the aspect buttons.</div>
+        <div id="iextra-box" style="display:none">
+          <label>More reference images (optional, up to 9)</label>
+          <input type="file" id="iextra" accept="image/*" multiple>
+          <div class="hint" id="iextrahint">Call them &ldquo;image 2&rdquo;, &ldquo;image 3&rdquo;&hellip; in the prompt. The input image above is image 1 and sets the output shape.</div>
+        </div>
       </div>
 
       <div id="idenoise-box" style="display:none">
         <label>Strength <span class="val" id="idenoisev" style="float:right">0.35</span></label>
         <div class="slider-row"><input type="range" id="idenoise" min="5" max="100" value="35"></div>
-        <div class="hint">How much the model redraws. Low keeps the layout and refreshes detail; mid changes faces and can add people; high is mostly a new picture. 1.0 ignores the input.</div>
+        <div class="hint">How much Krea redraws. Measured Oct 4 on the Sherlock pool table:
+          <b>0.2</b> same layout, faces refreshed &middot; <b>0.35</b> same layout, new faces, the prompt can add people
+          &middot; <b>0.6</b> same room and blocking, mostly a new picture. 1.0 ignores the input.</div>
       </div>
 
-      <div id="iedit-note" style="display:none" class="hint"><b>Edit.</b> Changes ONE thing about a real photo and keeps
-        everything else: <i>&ldquo;Relight to dusk with every window glowing&rdquo;</i>,
-        <i>&ldquo;Replace the background with a coffee shop&rdquo;</i>, <i>&ldquo;Remove the trash can on the left&rdquo;</i>.
-        End with <i>&ldquo;Keep the &hellip; exactly the same.&rdquo;</i> Only name things that are IN the photo.
-        Use <b>Upscale this image</b> after for a larger version.</div>
+      <div id="iid-note" style="display:none" class="hint"><b>Identity.</b> Keeps the SAME person (face, hair,
+        outfit) and puts them somewhere new. Give it a clear photo of one person and write a plain instruction:
+        <i>&ldquo;Show this man sitting in a candlelit pub holding a pint.&rdquo;</i> Anything you don&rsquo;t mention
+        (a pipe, a hat) tends to stay. Renders at ~1 MP in the aspect you pick, 10 steps, about 40s.
+        Oct 4 test: face likeness 0.81 to the source. Krea 2 Identity Edit v1.2.</div>
+      <div id="iedit-note" style="display:none" class="hint"><b>Edit (Qwen).</b> Changes ONE thing about a real photo and
+        keeps everything else: <i>&ldquo;Relight to dusk with every window glowing&rdquo;</i>, <i>&ldquo;Make it golden hour with the
+        string lights on&rdquo;</i>, <i>&ldquo;Replace the background with a coffee shop&rdquo;</i>, <i>&ldquo;Remove the trash can on the
+        left&rdquo;</i>, <i>&ldquo;Show the same room from 45&deg; to the left&rdquo;</i>. End with <i>&ldquo;Keep the &hellip; exactly the
+        same.&rdquo;</i> &#x1F534; Only name things that are IN the photo (asked to clear an island that didn&rsquo;t exist, it built one).
+        About 25 s at 1 MP in the photo&rsquo;s own shape; hit <b>Upscale this image</b> after for 4K.<br>
+        <b>Which mode?</b> Change the light, background, an object or the angle of a REAL photo &rarr; <b>Edit</b>.
+        Same person in a new scene &rarr; <b>Identity</b>. A new picture in another image&rsquo;s look &rarr; <b>Reference</b>.
+        Redraw the whole picture a little or a lot &rarr; <b>Image to Image</b>. From scratch &rarr; <b>Text</b>.</div>
+      <div id="iangle-box" style="display:none">
+        <div class="hint"><b>Angles.</b> Re-shoots the input photo from new camera positions and keeps the
+          person or product the same (Qwen Edit 2511 + the fal Multiple Angles LoRA). Pick any mix below:
+          every combination of the ticked boxes gets made, one at a time, about 22 s each, ~1 MP.
+          Best on people and things shot from the side; an overhead food shot moves less.
+          &ldquo;Close-up&rdquo; barely zooms. Hit <b>Upscale this image</b> after for 4K.</div>
+        <label>Presets</label>
+        <div class="ratios" id="iang-pre">
+          <div class="ratio" data-pre="turn">Turnaround</div>
+          <div class="ratio" data-pre="hero">Hero set</div>
+          <div class="ratio" data-pre="clear">Clear</div>
+        </div>
+        <label>Around the subject</label>
+        <div class="ratios" id="iang-az" style="grid-template-columns:repeat(4,1fr)">
+          <div class="ratio" data-v="front-left quarter view">Front-left</div>
+          <div class="ratio active" data-v="front view">Front</div>
+          <div class="ratio active" data-v="front-right quarter view">Front-right</div>
+          <div class="ratio" data-v="right side view">Right</div>
+          <div class="ratio" data-v="left side view">Left</div>
+          <div class="ratio" data-v="back-left quarter view">Back-left</div>
+          <div class="ratio" data-v="back view">Back</div>
+          <div class="ratio" data-v="back-right quarter view">Back-right</div>
+        </div>
+        <label>Camera height</label>
+        <div class="ratios" id="iang-el" style="grid-template-columns:repeat(4,1fr)">
+          <div class="ratio" data-v="low-angle shot">Low</div>
+          <div class="ratio active" data-v="eye-level shot">Eye level</div>
+          <div class="ratio" data-v="elevated shot">Raised</div>
+          <div class="ratio" data-v="high-angle shot">High</div>
+        </div>
+        <label>Distance</label>
+        <div class="ratios" id="iang-di">
+          <div class="ratio" data-v="close-up">Close</div>
+          <div class="ratio active" data-v="medium shot">Medium</div>
+          <div class="ratio" data-v="wide shot">Wide</div>
+        </div>
+        <div class="hint" id="iang-count"></div>
+      </div>
+      <div id="imoss-note" style="display:none" class="hint"><b>MOSS-Image</b> (40 steps, about 45 s at 2 MP). The one model here that spells:
+        every prompted word correct in our tests, including a five-line price list and a URL. Put the words you want
+        in quotes in <b>Text</b> mode, or use <b>Layout</b> for a poster, menu, business card or book page with each block where you put it.
+        Say &ldquo;no visible text&rdquo; when you want none: left alone it invents lettering on signs and windows. Photoreal is good but
+        Krea is better; illustration matches Qwen 2.1. Renders are capped at 1.5 MP.</div>
+      <div id="iqwen-note" style="display:none" class="hint"><b>Qwen 2.1</b> (Kijai turbo LoRA, 8 steps, about 30 s).
+        Oct 9 bake-off: strong for transparent cutouts, chalkboard/menu text and edits that must not invent things.
+        &#x1F534; Misspelled &ldquo;CAPT&rsquo;N&rdquo; as &ldquo;CAPT&rsquo;AN&rdquo; 6 of 6 times: proof-read every client name.
+        <b>Edit</b>: plain instruction, as many as 10 photos (e.g. <i>&ldquo;Put the string lights from image 2 on the house in image 1&rdquo;</i>,
+        or <i>&ldquo;Remove the background, and output a PNG image&rdquo;</i> with Transparent ticked). It barely moves the camera; for angle changes switch back to
+        Krea 2 Turbo and use its Edit (Qwen 2511).</div>
+      <div id="iref-note" style="display:none" class="hint"><b>Style reference.</b> Makes a NEW picture from
+        your prompt, painted in the look of the input image (color, light, texture, medium). It does not
+        edit the input, so describe the whole scene you want. Uses the aspect buttons below.
+        Krea 2 style LoRA by ostris.</div>
 
       <label>Prompt <span class="browse" id="itmpl" style="float:right; margin:0">insert template</span></label>
-      <textarea id="iprompt" placeholder="Describe the image. Name the camera body and lens, the exposure decision, and the light."></textarea>
+      <textarea id="iprompt" placeholder="Describe the image. Name the camera body and lens, the exposure decision, and the light — Krea leans painterly unless you push it toward photography."></textarea>
 
       <label>Aspect ratio</label>
       <div class="ratios" id="iratio" style="grid-template-columns:repeat(5,1fr)">
@@ -395,25 +696,40 @@
         <div class="ratio" data-w="1088" data-h="1920">9:16</div>
         <div class="ratio" data-w="0" data-h="0" id="iratio-src" style="display:none">Source</div>
       </div>
-      <div class="hint" id="idimhint">1728 &times; 1152</div>
+      <div class="hint" id="idimhint">1728 &times; 1152 (~2 MP, the Oct 4 bake-off winner)</div>
 
       <label>Steps <span class="val" id="stepsv" style="float:right">24</span></label>
       <div class="slider-row">
         <input type="range" id="steps" min="0" max="1000" step="1" value="382">
       </div>
-      <div class="hint" id="stepshint">More steps means more detail and a longer render.</div>
+      <div class="hint" id="stepshint">
+        &asymp;27s &middot; sharp. Flux2Scheduler accepts 1&ndash;4096, so the slider is
+        logarithmic &mdash; a linear one would skip 15 steps per pixel. Measured at
+        1216&times;832: <b>8</b> waxy skin and mushy wood (15s) &middot; <b>20</b> real skin
+        texture, wood grain, correct glass refraction (27s) &middot; <b>32</b> label and
+        surface-grain detail (42s). Stylised work (comic, poster, illustration) is already
+        excellent at 8.
+      </div>
 
       <details>
         <summary>Advanced</summary>
         <label>Seed (&minus;1 = random)</label>
         <input type="number" id="iseed" value="-1">
+        <div class="chk">
+          <input type="checkbox" id="pweight">
+          <label for="pweight" style="margin:0; cursor:pointer">token weighting &mdash; <code>(word:2)</code> / <code>(word:-1)</code></label>
+        </div>
+        <div class="hint">Token weighting sends <code>(word:2)</code> / <code>(word:-1)</code> to the
+        model. Whether the hosted model honours it is checked per model; when it does not, the
+        markers are stripped so the prompt still reads cleanly.</div>
       </details>
 
       <button class="gen" id="igen">Generate Image</button>
       <div class="err" id="ierr"></div>
 
       <label>Make it vertical</label>
-      <div class="hint">Make the wide image, then crop a vertical frame out of it here. The crop is upscaled back to full phone size.</div>
+      <div class="hint">Krea looks most like a real photo in 16:9 and 3:2, so make the wide one,
+        then crop a vertical frame out of it here. SeedVR2 upscales the crop back to full phone size.</div>
       <div class="ratios" id="cropratio" style="grid-template-columns:repeat(2,1fr)">
         <div class="ratio active" data-r="9:16">9:16 Stories / Reels</div>
         <div class="ratio" data-r="4:5">4:5 Instagram post</div>
@@ -425,14 +741,15 @@
       <button class="gen" id="ivert" disabled>Crop to vertical + upscale</button>
       <div class="err" id="verr"></div>
 
-      <label>Upscale</label>
-      <div class="hint">Enlarges the image you&rsquo;re viewing, or any picture from your computer, keeping real skin, lashes and lettering.</div>
+      <label>Upscale (SeedVR2)</label>
+      <div class="hint">Keeps real skin, lashes and lettering (no plastic ESRGAN look). About 20 s.
+        Use it on the image you're viewing, or upload any picture from your computer.</div>
       <div class="ratios" id="usize" style="grid-template-columns:repeat(2,1fr)">
         <div class="ratio active" data-s="4k">4K (short side 2160)</div>
         <div class="ratio" data-s="2x">2x</div>
       </div>
       <button class="gen" id="iup" disabled>Upscale this image</button>
-      <button class="gen" id="iupload" style="margin-top:8px">Upload &amp; upscale&hellip;</button>
+      <button class="gen" id="iupload" style="margin-top:8px">Upload &amp; upscale…</button>
       <input type="file" id="iupfile" accept="image/*" style="display:none">
       <div class="err" id="uerr"></div>
 
@@ -450,8 +767,9 @@
 
 <script>
 const $ = s => document.querySelector(s);
-let VW = 1344, VH = 768, VMODE = 't2v', VMODEL = 'minimax', VIMG = null, LAST = null, BUSY = false;
+let VW = 1344, VH = 768, VMODE = 't2v', VIMG = null, VREFS = [], LAST = null, BUSY = false;
 let TAB = 'video', IW = 1728, IH = 1152, ILAST = null, GTAGS = {};
+
 
 // Renders run as server-side jobs: jfetch() posts with X-Backlot-Async, gets a job id back
 // at once and polls until it is done, then hands back a Response-like object so the call
@@ -485,7 +803,7 @@ addEventListener('load', async () => {
   let saved = null;
   try{ saved = JSON.parse(localStorage.getItem('backlot.job') || 'null'); }catch(e){}
   if(!saved) return;
-  const isVideo = ['/api/video', '/api/upscale'].includes(saved.url);   // Video upscales return a clip too
+  const isVideo = ['/api/video', '/api/upscale', '/api/slowmo'].includes(saved.url);   // Moves also post to /api/video
   const tab = document.querySelector('.tab[data-tab="' + (isVideo ? 'video' : 'image') + '"]');
   if(tab && !tab.classList.contains('active')) tab.click();
   setBusy(true, 'picking up the render that was running before the reload…');
@@ -505,22 +823,33 @@ addEventListener('load', async () => {
   setBusy(false);
 });
 
-// Server status. The dot goes green when the API answers; Phase 2 replaces this
-// with the Kie-backed status endpoint.
+// No local-engine heartbeat or window-close GPU hand-back: generation runs on the
+// hosted API, so there is no resident model to release.
+
 function status(){
-  fetch('/api/status').then(r=>r.json()).then(()=>{
-    $('#dot').classList.add('on');
-    $('#statustxt').textContent = 'studio ready';
-  }).catch(()=>{
-    $('#dot').classList.remove('on');
-    $('#statustxt').textContent = 'server not reachable';
-  });
+  fetch('/api/status').then(r=>r.json()).then(d=>{
+    $('#dot').classList.toggle('on', d.ok !== false);
+    $('#statustxt').textContent = d.ok === false ? 'generation disabled' : 'studio ready';
+  }).catch(()=>{ $('#dot').classList.remove('on'); $('#statustxt').textContent = 'server not reachable'; });
 }
 status(); setInterval(status, 6000);
 
+let VMODEL = 'minimax';
 function paintVModel(){
-  $('#modelhint').textContent = 'Text and image to video with audio.';
+  const ltx = VMODEL === 'ltx25';
+  $('#modelhint').textContent = ltx
+    ? 'LTX-2.5 distilled · local · text and image to video with audio · the fast one: 8 + 3 steps, about 2 to 4 min a clip.'
+    : 'MiniMax H3 · local · text and image to video with audio.';
+  document.querySelectorAll('#vmode .ratio').forEach(x => { x.style.display = (ltx && !['t2v','i2v'].includes(x.dataset.mode)) ? 'none' : ''; });
+  const cam = $('#camera').closest('.chk');
+  [cam.previousElementSibling, cam, $('#camrow'), $('#camhint')].forEach(e => { if(e) e.style.display = ltx ? 'none' : ''; });
+  if(ltx && !['t2v','i2v'].includes(VMODE)) document.querySelector('#vmode .ratio[data-mode="t2v"]').click();
+  if(!ltx){ $('#camrow').style.display = $('#camera').checked ? '' : 'none'; $('#camhint').style.display = $('#camera').checked ? '' : 'none'; }
+  $('#lenhint').textContent = ltx
+    ? 'LTX-2.5 renders at 24 fps on a 64-pixel grid; 1344x768 becomes 1344x768, 5 s is 121 frames. Measured on this card: see the README table.'
+    : LENHINT;
 }
+const LENHINT = $('#lenhint').textContent;
 $('#modelpick').addEventListener('click', e=>{
   const b = e.target.closest('.ratio'); if(!b || BUSY) return;
   document.querySelectorAll('#modelpick .ratio').forEach(x=>x.classList.remove('active'));
@@ -533,6 +862,16 @@ $('#vmode').addEventListener('click', e=>{
   b.classList.add('active');
   VMODE = b.dataset.mode;
   $('#i2v-box').style.display = VMODE === 'i2v' ? '' : 'none';
+  $('#ref-box').style.display = (VMODE === 'ref' || VMODE === 'orbit') ? '' : 'none';
+  // 360 Orbit writes its own prompt and has a fixed length; reference audio + chaining don't apply.
+  const orbit = VMODE === 'orbit';
+  $('#orbit-box').style.display = orbit ? '' : 'none';
+  [$('#prompt'), $('#prompt').previousElementSibling, $('#seconds').closest('.slider-row'),
+   $('#seconds').closest('.slider-row').previousElementSibling, $('#lenhint')].forEach(e => e.style.display = orbit ? 'none' : '');
+  $('#ref-extras').style.display = orbit ? 'none' : '';
+  // 🔴 Was applyTemplate(false) — it rewrote the prompt box on EVERY mode switch,
+  //    so the user had to delete the template before every new prompt. The template is
+  //    now opt-in only, via the "insert template" link. (2026-09-22)
 });
 
 $('#vratio').addEventListener('click', e=>{
@@ -590,8 +929,35 @@ Motion discipline: real-world speed, real time. No time-lapse, no speed ramp, no
 overall_soundscape: WHAT YOU HEAR.
 
 non_diegetic_music: N/A`,
-};
 
+ref: `subject_definitions:
+<Subject 1> is WHAT IT IS, shown in <Picture 1>: DESCRIBE IT IN DETAIL - material, colour, texture, arrangement, every part that must survive.
+<Subject 2> is WHAT IT IS, shown in <Picture 2>: DESCRIBE IT IN DETAIL - the surfaces, the furniture, the lighting, the background, anything that identifies the place.
+
+summary:
+[reference generation] A single live-action shot placing <Subject 1> within <Subject 2>, preserving SAY WHAT MUST BE PRESERVED.
+
+retention_analysis:
+<Subject 1> is fully_preserved: LIST WHAT CARRIES OVER UNCHANGED.
+<Subject 2> is fully_preserved: LIST WHAT CARRIES OVER UNCHANGED.
+
+detailed_description:
+[Shot 1] Live-action, photographic, cinematic, WHAT GRADE AND LIGHT. A single locked-off WHAT KIND OF shot. <Subject 1> sits WHERE IN THE FRAME, viewed from WHAT ANGLE. Behind it, slightly out of focus, <Subject 2> recedes: NAME THE BACKGROUND ELEMENTS. The camera is a static locked-off tripod shot: it never pans, tilts, zooms, dollies or cuts, and the framing at the last frame is identical to the first. COMPOSITION LOCK, held absolutely fixed for the entire clip: LIST EVERY ELEMENT THAT MUST NOT DRIFT.
+
+[0 to 2 seconds] WHAT MOVES, slightly.
+
+[2 to 4 seconds] WHAT MOVES NEXT.
+
+[4 to 5 seconds] HOW IT SETTLES. Everything is exactly where it started.
+
+Motion discipline: real-world speed, real time. No time-lapse, no speed ramp, no people, no hands, no on-screen text, no cuts, no camera movement.
+
+overall_soundscape:
+WHAT YOU HEAR.
+
+non_diegetic_music:
+N/A`
+};
 // A prompt counts as "untouched" if it is byte-identical to a template, so
 // switching modes never destroys something the user actually wrote.
 function isTemplate(t){ return Object.values(TEMPLATES).some(v => v === t); }
@@ -607,6 +973,140 @@ $('#tmpl').addEventListener('click', ()=>{
      && !confirm('Replace what you have written with the blank template?')) return;
   applyTemplate(true);
 });
+
+// ---- chain projects -------------------------------------------------------
+// Each project has its own latent folder. Populate the picker from disk and show
+// how many slots it already has, so the user never has to remember the next number.
+let CHAINS = [];
+async function loadChains(){
+  try{
+    const r = await fetch('/api/chains'); const d = await r.json();
+    CHAINS = d.chains || [];
+    $('#chainlist').innerHTML = CHAINS.map(c=>`<option value="${c.id}">`).join('');
+    chainStatus();
+  }catch(e){ /* non-fatal */ }
+}
+function chainStatus(){
+  const id = ($('#chainproject').value || 'h3_context').trim();
+  const c = CHAINS.find(x => x.id === id || x.id === 'h3_context-' + id);
+  const el = $('#chainstatus');
+  if(c && c.slots){
+    el.innerHTML = `<b>${c.id}</b> &mdash; ${c.slots} clip(s) saved, highest is ${c.highest}. `
+                 + `<b>Next clip = ${c.next}.</b>`;
+  } else {
+    el.textContent = `New project "${id}" — nothing saved yet, so start the chain at 1.`;
+  }
+}
+$('#chainproject').addEventListener('input', chainStatus);
+$('#chainproject').addEventListener('change', chainStatus);
+loadChains();
+
+$('#camera').addEventListener('change', e=>{
+  const on = e.target.checked;
+  $('#camrow').style.display = on ? '' : 'none';
+  $('#camhint').style.display = on ? '' : 'none';
+});
+$('#camstr').addEventListener('input', e=>{ $('#camstrv').textContent = (+e.target.value).toFixed(2); });
+
+// VREFS is [{name, data}] in <Picture N> order. Picking files APPENDS — the old
+// handler reset the array on every change, so adding a second image one at a time
+// silently threw the first one away and forced ctrl-click-everything-at-once.
+const REF_MAX = 9;
+$('#reffiles').addEventListener('change', e=>{
+  const picked = Array.from(e.target.files);
+  e.target.value = '';                       // so re-picking the SAME file still fires change
+  const room = REF_MAX - VREFS.length;
+  if(room <= 0){ $('#err').textContent = 'Ref2VA accepts at most ' + REF_MAX + ' images.'; return; }
+  if(picked.length > room) $('#err').textContent =
+    'Only room for ' + room + ' more — the rest were ignored.';
+  // Read in parallel but place by index, so the thumbnails land in the order picked
+  // no matter which FileReader finishes first.
+  const batch = picked.slice(0, room);
+  const base = VREFS.length;
+  let pending = batch.length;
+  batch.forEach((f, i) => {
+    const rd = new FileReader();
+    rd.onload = () => {
+      VREFS[base + i] = {name: f.name, data: rd.result};
+      if(--pending === 0) drawRefs();
+    };
+    rd.readAsDataURL(f);
+  });
+});
+
+// AREFS is [{name, data}] in <Audio N> order. Same append-not-replace rule as
+// images. H3 takes at most 3 audio references.
+const AREF_MAX = 3;
+const AREFS = [];
+$('#refaudiofiles').addEventListener('change', e=>{
+  const picked = Array.from(e.target.files);
+  e.target.value = '';
+  const room = AREF_MAX - AREFS.length;
+  if(room <= 0){ $('#err').textContent = 'Ref2VA accepts at most ' + AREF_MAX + ' audio clips.'; return; }
+  if(picked.length > room) $('#err').textContent =
+    'Only room for ' + room + ' more audio clip(s) — the rest were ignored.';
+  const batch = picked.slice(0, room);
+  const base = AREFS.length;
+  let pending = batch.length;
+  batch.forEach((f, i) => {
+    const rd = new FileReader();
+    rd.onload = () => {
+      AREFS[base + i] = {name: f.name, data: rd.result};
+      if(--pending === 0) drawAudioRefs();
+    };
+    rd.readAsDataURL(f);
+  });
+});
+
+function drawAudioRefs(){
+  const list = $('#refaudiolist');
+  list.innerHTML = AREFS.map((r, i) => (
+    '<div style="display:flex;align-items:center;gap:8px;margin:6px 0">' +
+      '<span class="refnum" style="position:static" title="cite this as &lt;Audio ' + (i+1) + '&gt;">' + (i+1) + '</span>' +
+      '<audio controls preload="metadata" src="' + r.data + '" style="height:32px;flex:1;min-width:0"></audio>' +
+      '<span class="refname" style="position:static;max-width:38%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + r.name + '">' + r.name + '</span>' +
+      '<button class="refdel" style="position:static" data-adel="' + i + '" title="remove">&times;</button>' +
+    '</div>'
+  )).join('') + (AREFS.length < AREF_MAX
+    ? '<div class="addref" id="addaudioref" style="display:inline-flex" title="add reference audio">+</div>' : '');
+
+  const add = $('#addaudioref');
+  if(add) add.addEventListener('click', ()=> $('#refaudiofiles').click());
+  list.querySelectorAll('[data-adel]').forEach(b => b.addEventListener('click', ()=>{
+    AREFS.splice(+b.dataset.adel, 1); drawAudioRefs();
+  }));
+}
+drawAudioRefs();
+
+function drawRefs(){
+  const list = $('#reflist');
+  list.innerHTML = VREFS.map((r, i) => (
+    '<div class="refitem">' +
+      '<div class="refnum" title="cite this as &lt;Picture ' + (i+1) + '&gt;">' + (i+1) + '</div>' +
+      '<button class="refdel" data-del="' + i + '" title="remove">&times;</button>' +
+      '<img src="' + r.data + '" alt="">' +
+      '<div class="refmove">' +
+        '<button data-mv="' + i + '" data-dir="-1"' + (i === 0 ? ' disabled' : '') + ' title="move earlier">&#9664;</button>' +
+        '<button data-mv="' + i + '" data-dir="1"' + (i === VREFS.length-1 ? ' disabled' : '') + ' title="move later">&#9654;</button>' +
+      '</div>' +
+      '<div class="refname" title="' + r.name + '">' + r.name + '</div>' +
+    '</div>'
+  )).join('') + (VREFS.length < REF_MAX
+    ? '<div class="addref" id="addref" title="add reference images">+</div>' : '');
+
+  const add = $('#addref');
+  if(add) add.addEventListener('click', ()=> $('#reffiles').click());
+  list.querySelectorAll('[data-del]').forEach(b => b.addEventListener('click', ()=>{
+    VREFS.splice(+b.dataset.del, 1); drawRefs();
+  }));
+  list.querySelectorAll('[data-mv]').forEach(b => b.addEventListener('click', ()=>{
+    const i = +b.dataset.mv, j = i + (+b.dataset.dir);
+    if(j < 0 || j >= VREFS.length) return;
+    [VREFS[i], VREFS[j]] = [VREFS[j], VREFS[i]];
+    drawRefs();
+  }));
+}
+drawRefs();
 
 $('#i2vfile').addEventListener('change', e=>{
   const f = e.target.files[0]; if(!f) return;
@@ -635,55 +1135,71 @@ function cropNote(){
 
 function setBusy(on, msg){
   BUSY = on;
-  $('#gen').disabled = on; $('#upscale').disabled = on; $('#igen').disabled = on; $('#ivert').disabled = on || !ILAST; $('#iup').disabled = on || !ILAST; $('#iupload').disabled = on;
+  $('#gen').disabled = on; $('#mgen').disabled = on; $('#cgen').disabled = on; $('#agen').disabled = on; $('#augen').disabled = on; $('#upscale').disabled = on; $('#igen').disabled = on; $('#ivert').disabled = on || !ILAST; $('#iup').disabled = on || !ILAST; $('#iupload').disabled = on;
   if(on){
     $('#viewer').innerHTML = '<div class="placeholder"><div class="spinner"></div>' + (msg||'working…')
       + '<div class="pbar" hidden><div class="pfill"></div></div><div class="ptext"></div></div>';
   }
 }
-
-// Live progress from the rendering job: the job proxy reports a coarse state and,
-// when it knows one, a 0-100 percentage.
+// Live progress from the hosted job (/api/jobs/<id> reports a coarse state + percentage).
 function setProgress(pr, elapsed){
   const bar = $('#viewer .pbar'), fill = $('#viewer .pfill'), txt = $('#viewer .ptext');
   if(!bar) return;
-  if(pr.state === 'queued'){ txt.textContent = 'queued'; return; }
+  if(pr.queue){ txt.textContent = 'queued, ' + pr.queue + ' ahead'; return; }
   bar.hidden = false;
-  const pct = typeof pr.progress === 'number' ? Math.max(0, Math.min(100, Math.round(pr.progress))) : 0;
+  // Accept the hosted job's {state, progress} shape, and keep the legacy step shape working
+  // until every endpoint is rewired.
+  const pct = typeof pr.progress === 'number'
+    ? Math.max(0, Math.min(100, Math.round(pr.progress)))
+    : Math.round((pr.steps ? (pr.step || 0) / pr.steps : 0) * 100);
   fill.style.width = pct + '%';
   let t = pct + '%';
   if(pr.state) t += ' · ' + pr.state;
+  if(pr.steps) t += ' · step ' + pr.step + '/' + pr.steps;
   if(elapsed) t += ' · ' + Math.round(elapsed) + ' s';
   txt.textContent = t;
 }
-
 function showVideo(url, meta){
   $('#viewer').innerHTML = '<video src="'+url+'" controls autoplay loop muted></video>'
     + (meta ? '<div class="meta">'+meta+'</div>' : '');
 }
-
 function showImage(url, meta){
   $('#viewer').innerHTML = '<img src="'+url+'" alt="">'
     + (meta ? '<div class="meta">'+meta+'</div>' : '')
     + '<div class="handoff">'
-    + '<button data-to="video" title="Use as the start frame in Video (Image to Video)">Animate</button></div>';
+    + '<button data-to="video" title="Use as the start frame in Video (Image to Video)">Animate</button>'
+    + '<button data-to="moves" title="Run a camera move on this image">Move</button>'
+    + '<button data-to="cinema" title="Start the first Cinema shot on this image">Cinema</button>'
+    + '<button data-to="apps" title="Use this image in an App">Apps</button></div>';
   $('#viewer .handoff').addEventListener('click', e => { const b = e.target.closest('button'); if(b) handoff(url, b.dataset.to); });
 }
-// Handoff: the app already knows which image is on screen, so no file picking.
-// Fetch it back as a data URL (the same thing the file inputs produce) and set Video's state.
+// Handoff (Oct 21 2026): the app already knows which image is on screen, so no file picking.
+// Fetch it back as a data URL (the same thing the file inputs produce) and set that tab's state.
+let PENDING_IMG = null, PENDING_NAME = '';
 async function handoff(url, to){
-  if(BUSY || to !== 'video') return;
+  if(BUSY) return;
   const name = decodeURIComponent(url.split('/').pop().split('?')[0]);
   let data;
   try{ data = await readFileAsData(await (await fetch(url)).blob()); }catch(e){ fail('could not load ' + name); return; }
-  const tab = document.querySelector('#tabs .tab[data-tab="video"]');
+  const tab = document.querySelector('#tabs .tab[data-tab="' + to + '"]');
   if(tab && !tab.classList.contains('active')) tab.click();
-  document.querySelector('#vmode .ratio[data-mode="i2v"]').click();
-  VIMG = data; cropNote();
-  $('#viewer').innerHTML = '<img src="' + url + '" alt=""><div class="meta">Start frame: ' + name + '. Describe the motion and press Generate Video.</div>';
+  let note = '';
+  if(to === 'video'){
+    document.querySelector('#vmode .ratio[data-mode="i2v"]').click();
+    VIMG = data; cropNote();
+    note = 'Start frame: ' + name + '. Describe the motion and press Generate Video.';
+  } else if(to === 'moves'){
+    MIMG = data; $('#mimghint').textContent = 'Starting on ' + name + ' (Image to Video).';
+    note = 'Starting on ' + name + '. Pick a move, describe the subject, press Generate.';
+  } else if(to === 'cinema'){
+    CIMG = data; $('#cimghint').textContent = 'First shot starts on ' + name + '.';
+    note = 'First shot starts on ' + name + '. Describe the scene and compose.';
+  } else if(to === 'apps'){
+    PENDING_IMG = data; PENDING_NAME = name;
+    note = name + ' is loaded. Pick an app and it is already in the Photo slot.';
+  }
+  $('#viewer').innerHTML = '<img src="' + url + '" alt=""><div class="meta">' + note + '</div>';
 }
-function readFileAsData(file){ return new Promise((res, rej)=>{ const rd = new FileReader(); rd.onload = ()=>res(rd.result); rd.onerror = rej; rd.readAsDataURL(file); }); }
-
 function fail(e){
   $('#err').textContent = e;
   $('#viewer').innerHTML = '<div class="placeholder">That run did not finish.</div>';
@@ -692,15 +1208,23 @@ function fail(e){
 $('#gen').addEventListener('click', async ()=>{
   const prompt = $('#prompt').value.trim();
   $('#err').textContent = '';
-  if(!prompt){ fail('Write a prompt first.'); return; }
+  if(!prompt && VMODE !== 'orbit'){ fail('Write a prompt first.'); return; }
+  if(VMODE === 'orbit' && VREFS.length !== 1 && VREFS.length !== 3){ fail('360 Orbit takes 1 photo, or 3 (front, then 120° and 240° around).'); return; }
   if(VMODE === 'i2v' && !VIMG){ fail('Image to Video needs an input image.'); return; }
+  if(VMODE === 'ref' && !VREFS.length){ fail('Reference mode needs at least one image.'); return; }
   if(/[A-Z]{3,}/.test(prompt) && !confirm('The prompt still has TEMPLATE PLACEHOLDERS in caps. Generate anyway?')) return;
-  setBusy(true, 'generating video…');
+  setBusy(true, VMODEL === 'ltx25' ? 'generating on LTX-2.5… about 2 to 4 min' : VMODE === 'orbit' ? 'rendering a 360 orbit (ORB360)… about 12 min' : 'generating on MiniMax H3… first run loads a 10GB model');
   try{
     const r = await jfetch('/api/video', {method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({mode:VMODE, prompt, width:VW, height:VH, model: VMODEL,
+      body: JSON.stringify({mode:VMODE, prompt, width:VW, height:VH, model: VMODEL, label: VMODEL === 'ltx25' ? 'LTX-2.5 ' + (VMODE === 'i2v' ? 'Image to Video' : 'Video') : undefined,
         seconds: parseFloat($('#seconds').value), seed: parseInt($('#seed').value || '-1'),
-        image: VMODE === 'i2v' ? VIMG : null})});
+        image: VMODE === 'i2v' ? VIMG : null,
+        images: (VMODE === 'ref' || VMODE === 'orbit') ? VREFS.map(r => r.data) : null,
+        audios: VMODE === 'ref' ? AREFS.map(r => ({name: r.name, data: r.data})) : null,
+        chain_index: VMODE === 'ref' ? (+$('#chainindex').value || 0) : 0,
+        chain_project: VMODE === 'ref' ? ($('#chainproject').value || 'h3_context') : null,
+        camera_motion: $('#camera').checked,
+        camera_strength: parseFloat($('#camstr').value)})});
     const d = await r.json();
     if(!r.ok) throw new Error(d.error || 'generation failed');
     LAST = d.url.split('/').pop();
@@ -715,35 +1239,74 @@ async function runUpscale(payload, label){
   $('#err').textContent = '';
   setBusy(true, label);
   try{
+    payload.interpolate = $('#interp').checked;
+    payload.fast = $('#vfast').checked;
     const r = await jfetch('/api/upscale', {method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify(payload)});
     const d = await r.json();
     if(!r.ok) throw new Error(d.error || 'upscale failed');
     LAST = d.url.split('/').pop();
-    showVideo(d.url + '?t=' + Date.now(), 'upscaled · ' + d.fps + 'fps · ' + d.took + 's');
+    showVideo(d.url + '?t=' + Date.now(), 'upscaled (' + (d.upscaler === 'seedvr2' ? 'SeedVR2' : 'ESRGAN') + ') · ' + d.fps + 'fps · ' + d.took + 's');
     loadGallery();
   }catch(e){ fail(e.message); }
   setBusy(false);
 }
+
 $('#upscale').addEventListener('click', ()=>{
   if(!LAST){ $('#vidfile').click(); return; }   // nothing generated yet -> browse
-  runUpscale({last: LAST}, 'upscaling the last clip…');
+  runUpscale({last: LAST}, 'upscaling the last clip' + ($('#vfast').checked ? ' (fast)…' : ' with SeedVR2… about 5–6 min per 5 s clip'));
 });
 $('#browse').addEventListener('click', ()=> $('#vidfile').click());
+
+// ---------------- Slow down 2x (RIFE + same fps = double length), Oct 10 2026 ----------------
+async function runSlowmo(payload, label){
+  $('#err').textContent = '';
+  setBusy(true, label);
+  try{
+    const r = await jfetch('/api/slowmo', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
+    const d = await r.json();
+    if(!r.ok) throw new Error(d.error || 'slow-down failed');
+    LAST = d.url.split('/').pop();
+    showVideo(d.url + '?t=' + Date.now(), 'slowed 2× · ' + d.seconds + 's · ' + d.fps + 'fps · ' + (d.audio ? 'audio stretched' : 'no audio') + ' · ' + d.took + 's');
+    loadGallery();
+  }catch(e){ fail(e.message); }
+  setBusy(false);
+}
+$('#slowmo').addEventListener('click', ()=>{
+  if(!LAST){ $('#slowfile').click(); return; }
+  runSlowmo({last: LAST}, 'slowing the clip down 2× (RIFE)… about a minute');
+});
+$('#slowbrowse').addEventListener('click', ()=> $('#slowfile').click());
+$('#slowfile').addEventListener('change', e=>{
+  const f = e.target.files[0]; if(!f) return;
+  const rd = new FileReader();
+  rd.onload = () => runSlowmo({video: rd.result, filename: f.name}, 'slowing ' + f.name + ' down 2× (RIFE)… about a minute');
+  rd.readAsDataURL(f);
+  e.target.value = '';
+});
 $('#vidfile').addEventListener('change', e=>{
   const f = e.target.files[0]; if(!f) return;
   const rd = new FileReader();
-  rd.onload = () => runUpscale({video: rd.result, filename: f.name}, 'upscaling ' + f.name + '…');
+  rd.onload = () => runUpscale({video: rd.result, filename: f.name}, 'upscaling ' + f.name + ($('#vfast').checked ? ' (fast)…' : ' with SeedVR2… about 5–6 min per 5 s clip'));
   rd.readAsDataURL(f);
   e.target.value = '';
 });
 
 function loadGallery(){
   // The strip always mirrors the tab you are on: clips under Video, stills under Image.
-  const img = TAB === 'image';
-  fetch('/api/gallery?kind=' + (img ? 'image' : 'video')).then(r=>r.json()).then(d=>{
-    const base = img ? '/images/' : '/outputs/';
+  const img = TAB === 'image', aud = TAB === 'audio';
+  fetch('/api/gallery?kind=' + (img ? 'image' : aud ? 'audio' : 'video')).then(r=>r.json()).then(d=>{
+    const base = img ? '/images/' : aud ? '/audio/' : '/outputs/';
     GTAGS = d.tags || {};
+    if(aud){
+      $('#gallery').innerHTML = (d.files||[]).map(f => { const t = GTAGS[f]; const q = t && t.score && t.score.overall != null ? '<span class="q">'+(+t.score.overall).toFixed(1)+'</span>' : ''; return '<div class="gitem"><div class="gaud" data-f="'+f+'" title="'+f+'">&#9835; '+(t ? t.label : f.replace(/(-master)?\.mp3$/,''))+q+'</div>' + delBtn(f) + '</div>'; }).join('');
+      document.querySelectorAll('#gallery .gaud').forEach(el => el.addEventListener('click', () => {
+        const t = GTAGS[el.dataset.f];
+        showAudio(base + encodeURIComponent(el.dataset.f), t ? t.label + (t.seed != null ? ' · seed ' + t.seed : '') : el.dataset.f, t);
+      }));
+      wireDelete('audio');
+      return;
+    }
     $('#gallery').innerHTML = (d.files||[]).map(f => { const t = GTAGS[f]; const tt = (t ? t.label + ' · ' : '') + f; return '<div class="gitem">' + (img
       ? '<img src="'+base+encodeURIComponent(f)+'" loading="lazy" title="'+tt+'" alt="">'
       : '<video src="'+base+encodeURIComponent(f)+'" muted preload="metadata" title="'+tt+'"></video>') + delBtn(f) + '</div>'; }
@@ -758,7 +1321,7 @@ function loadGallery(){
         else   { LAST  = name; showVideo(v.src, meta); }
         const r = document.getElementById('reuse');
         if(r && t) r.addEventListener('click', ()=>{
-          const box = img ? $('#iprompt') : $('#prompt');
+          const box = img ? $('#iprompt') : (TAB === 'moves' ? $('#msubject') : TAB === 'cinema' ? $('#cscene') : $('#prompt'));
           box.value = t.prompt; box.focus();
         });
       });
@@ -795,21 +1358,383 @@ function wireDelete(kind){
   }));
 }
 
+// ---------------- Audio (Oct 20 2026) ----------------
+// Song = YuE2 (lyrics + style + optional LoRA flavors). Sound FX = Stable Audio 3 Medium.
+let AENGINE = 'song';
+function showAudio(url, meta, tags){
+  // tags: {lyrics, score} when known. Lyrics open in a panel over the player so you can read along.
+  const t = tags || {}, q = t.score && t.score.overall != null ? ' · quality ' + (+t.score.overall).toFixed(1) : '';
+  const lyr = (t.lyrics || '').replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])).replace(/^\s*(\[[^\]\n]+\])\s*$/gm, '<span class="tag">$1</span>');
+  $('#viewer').innerHTML = '<div class="audiobox"><div class="note">&#9835;</div><audio src="'+url+'" controls autoplay></audio>'
+    + (lyr ? '<div class="lyrics" id="lyrics">'+lyr+'</div>' : '') + '</div>'
+    + (meta ? '<div class="meta">'+meta+q+'</div>' : '')
+    + (lyr ? '<div class="handoff"><button id="lyrbtn">Lyrics</button></div>' : '');
+  if(lyr) $('#lyrbtn').addEventListener('click', () => { const o = $('#lyrics').classList.toggle('open'); $('#lyrbtn').textContent = o ? 'Hide lyrics' : 'Lyrics'; });
+}
+function paintAudio(){
+  const song = AENGINE === 'song', len = $('#aulen');
+  $('#au-song').style.display = song ? 'block' : 'none';
+  $('#au-sfx').style.display = song ? 'none' : 'block';
+  $('#auhint').textContent = song
+    ? 'Lyrics and a style line in, a full song with vocals out. 48 kHz, about 15 s per 30 s of song.'
+    : 'Any sound effect, ambience or short music bed from a sentence. Stable Audio 3 Medium, 8 steps, about 1 s per second of audio.';
+  if(song){ len.min = 10; len.max = 240; len.step = 5; if(+len.value < 10) len.value = 60; }
+  else { len.min = 1; len.max = 45; len.step = 1; if(+len.value > 45) len.value = 6; }
+  $('#aulenv').textContent = len.value + ' s';
+}
+$('#aulen').addEventListener('input', () => { $('#aulenv').textContent = $('#aulen').value + ' s'; });
+$('#aupick').addEventListener('click', e => {
+  const b = e.target.closest('.ratio'); if(!b || BUSY) return;
+  document.querySelectorAll('#aupick .ratio').forEach(x => x.classList.remove('active'));
+  b.classList.add('active'); AENGINE = b.dataset.engine; paintAudio();
+});
+$('#auplan').addEventListener('click', e => {
+  const b = e.target.closest('.ratio'); if(!b || BUSY) return;
+  document.querySelectorAll('#auplan .ratio').forEach(x => x.classList.remove('active'));
+  b.classList.add('active');
+});
+function loadAudioLoras(){
+  fetch('/api/audio/loras').then(r => r.json()).then(list => {
+    $('#auloras').innerHTML = list.map(l => '<div class="ratio" data-file="'+l.file+'" title="'+l.file+'">'+l.label+'</div>').join('');
+  }).catch(()=>{});
+}
+$('#auloras').addEventListener('click', e => {
+  const b = e.target.closest('.ratio'); if(!b || BUSY) return;
+  b.classList.toggle('active');
+  const folk = [...document.querySelectorAll('#auloras .ratio.active')].some(x => x.dataset.file.startsWith('trbdr_'));
+  $('#aulorahint').textContent = folk ? '60s folk: the style line is optional (a built-in folk style is used when blank, and the trigger word is added for you). Pick the Full plan. Male voice, often in 3/4.' : '';
+});
+// Oct 28 2026 (Jake): takes queue up like Audio Studio did. Each take is its own server job
+// (X-Backlot-Async); the provider renders them one after another. No global busy lock, so you can
+// keep clicking Generate, change the style between clicks, and play any finished take from the list.
+// Each row has its own bar; the take that is rendering also drives the big bar in the viewer
+// (unless you are listening to something). Job ids live in localStorage so the list survives a reload.
+let AUN = 0;
+const AUSAVE = 'backlot.aujobs';
+function auSaved(){ try{ return JSON.parse(localStorage.getItem(AUSAVE) || '[]'); }catch(e){ return []; } }
+function auSave(list){ localStorage.setItem(AUSAVE, JSON.stringify(list.slice(0, 20))); }
+function auRow(job){
+  const st = job.state === 'done' ? '&#9654; play · ' + job.meta : job.state === 'failed' ? 'failed: ' + job.err : job.st;
+  job.el.className = 'aujob ' + job.state;
+  job.el.innerHTML = '<span>' + job.label + '</span><span class="st">' + st + '</span>'
+    + (job.state === 'running' ? '<div class="bar"><i style="width:' + (job.pct || 0) + '%"></i></div>' : '');
+}
+function auViewerFree(){
+  const a = document.querySelector('#viewer audio');
+  return !a || a.paused || a.ended;
+}
+function auViewerBar(job){
+  if(!auViewerFree() && !document.querySelector('#viewer .auprog')) return;
+  if(!document.querySelector('#viewer .auprog')){
+    $('#viewer').innerHTML = '<div class="placeholder auprog"><div class="spinner"></div><div class="aumsg"></div>'
+      + '<div class="pbar"><div class="pfill"></div></div><div class="ptext"></div></div>';
+  }
+  $('#viewer .aumsg').textContent = job.label + ': writing and singing on YuE2…';
+  $('#viewer .pfill').style.width = (job.pct || 0) + '%';
+  $('#viewer .ptext').textContent = job.st;
+}
+async function auPoll(job, jid, body, song){
+  let r;
+  for(;;){
+    await sleep(1500);
+    try{ r = await fetch('/api/jobs/' + jid); }catch(e){ continue; }
+    if(r.status !== 202) break;
+    try{
+      const d = await r.json(), pr = d.progress || {};
+      if(pr.queue){ const ahead = Math.max(0, pr.queue - 1); job.st = ahead ? 'waiting, ' + ahead + ' ahead' : 'next up'; job.pct = 0; }
+      else if(pr.steps){ job.pct = Math.round(100 * (pr.step || 0) / pr.steps); job.st = 'rendering ' + job.pct + '%' + (pr.nodes_total > 1 && pr.nodes_done ? ' (finishing)' : ''); }
+      else { job.st = 'rendering… ' + (d.elapsed ? Math.round(d.elapsed) + ' s' : ''); }
+      auRow(job);
+      if(!pr.queue) auViewerBar(job);
+    }catch(e){}
+  }
+  return r;
+}
+async function auRun(body, song, resume){
+  const job = {n: ++AUN, state: 'running', st: 'sending…', pct: 0, el: document.createElement('div')};
+  job.label = '#' + job.n + ' ' + (song ? (body.title || 'Song') : 'Sound FX');
+  $('#auqueue').prepend(job.el); auRow(job);
+  let jid = resume;
+  try{
+    let r;
+    if(!jid){
+      const r0 = await fetch('/api/audio', {method:'POST', headers:{'Content-Type':'application/json', 'X-Backlot-Async':'1'}, body: JSON.stringify(body)});
+      r = r0;
+      if(r0.status === 202){ jid = (await r0.json()).job; auSave([{jid, body, song}, ...auSaved()]); }
+    }
+    if(jid) r = await auPoll(job, jid, body, song);
+    if(r.status === 404) throw new Error('lost (the server restarted); the file may still be in the gallery');
+    const d = await r.json();
+    if(!r.ok) throw new Error(d.error || 'generation failed');
+    job.state = 'done';
+    job.meta = d.seconds + ' s · seed ' + d.seed + (d.score && d.score.overall != null ? ' · quality ' + (+d.score.overall).toFixed(1) : '');
+    const show = () => showAudio(d.url + '?t=' + Date.now(), (d.title ? d.title + ' · ' : '') + d.seconds + ' s · seed ' + d.seed + ' · ' + d.took + 's · ' + (song ? 'YuE2' + (d.mastered ? ' · mastered' : '') : 'Stable Audio 3'), song ? {lyrics: body.lyrics, score: d.score} : null);
+    job.el.onclick = show;
+    if(auViewerFree()) show();   // never cut off a take you are listening to
+    loadGallery();
+  }catch(e){
+    job.state = 'failed'; job.err = e.message;
+    if(document.querySelector('#viewer .auprog')) $('#viewer').innerHTML = '<div class="placeholder">That take did not finish.</div>';
+  }
+  if(jid) auSave(auSaved().filter(x => x.jid !== jid));
+  auRow(job);
+}
+addEventListener('load', () => { auSaved().reverse().forEach(x => auRun(x.body, x.song, x.jid)); });
+$('#autakes').addEventListener('click', e => {
+  const b = e.target.closest('.ratio'); if(!b) return;
+  document.querySelectorAll('#autakes .ratio').forEach(x => x.classList.remove('active'));
+  b.classList.add('active');
+});
+$('#augen').addEventListener('click', () => {
+  $('#auerr').textContent = '';
+  const song = AENGINE === 'song';
+  const body = { engine: AENGINE, mode: AENGINE, seconds: +$('#aulen').value, seed: parseInt($('#auseed').value || '-1') };
+  if(song){
+    body.title = $('#autitle').value.trim();
+    body.style = $('#austyle').value.replace(/\s*\n\s*/g, ' ').trim(); body.lyrics = $('#aulyrics').value.trim();
+    body.plan = document.querySelector('#auplan .ratio.active').dataset.plan;
+    body.loras = [...document.querySelectorAll('#auloras .ratio.active')].map(x => ({file: x.dataset.file}));
+    body.prompt = body.style;
+    if(!body.style){ $('#auerr').textContent = 'Give the song a style line first.'; return; }
+    if(!body.lyrics){ $('#auerr').textContent = 'Write some lyrics, or section tags for an instrumental.'; return; }
+  } else {
+    body.prompt = $('#auprompt').value.trim();
+    if(!body.prompt){ $('#auerr').textContent = 'Describe the sound first.'; return; }
+  }
+  const n = +document.querySelector('#autakes .ratio.active').dataset.n;
+  // seed -1 = a new random seed per take; a fixed seed steps up by one per take so takes still differ
+  for(let i = 0; i < n; i++) auRun(Object.assign({}, body, body.seed >= 0 ? {seed: body.seed + i} : {}), song);
+});
+paintAudio();
+
+// ---------------- Apps (Oct 20 2026) ----------------
+// Each app = a saved recipe over an endpoint that already exists. Inputs are declared, the form is built from them.
+const APPS = [
+  {id:'angles', name:'Angles', time:'~25 s', blurb:'Re-shoot a photo from a new camera position: 8 directions, 4 heights, 3 distances (Qwen Multiple Angles LoRA).',
+   inputs:[{k:'image',t:'image',label:'Photo'},{k:'azimuth',t:'pick',label:'Direction',opts:['front view','front-right quarter view','right side view','back-right quarter view','back view','back-left quarter view','left side view','front-left quarter view'],def:'front-right quarter view'},
+           {k:'elevation',t:'pick',label:'Height',opts:['low-angle shot','eye-level shot','elevated shot','high-angle shot'],def:'eye-level shot'},{k:'distance',t:'pick',label:'Distance',opts:['close-up','medium shot','wide shot'],def:'medium shot'}],
+   run:v=>({url:'/api/image', body:{mode:'angles', image:v.image, azimuth:v.azimuth, elevation:v.elevation, distance:v.distance, width:1728, height:1152}, kind:'image'})},
+  {id:'relight', name:'Relight', time:'~25 s', blurb:'Change the light on any photo: golden hour, window, neon, overcast, studio (Qwen Image Edit).',
+   inputs:[{k:'image',t:'image',label:'Photo'},{k:'light',t:'pick',label:'Light',opts:['golden hour','soft window light','neon night','overcast daylight','studio softbox','candlelight'],def:'golden hour'}],
+   run:v=>({url:'/api/image', body:{mode:'edit', image:v.image, prompt:'Relight this photo with ' + v.light + ', keep the subject, framing and every detail exactly the same, only the lighting changes.', width:1728, height:1152}, kind:'image'})},
+  {id:'cutout', name:'Cutout', time:'~25 s', blurb:'Lift the subject onto a transparent background as a real RGBA PNG (Qwen Image 2.1).',
+   inputs:[{k:'image',t:'image',label:'Photo'}],
+   run:v=>({url:'/api/image', body:{model:'qwen21', mode:'edit', image:v.image, transparent:true, prompt:'Keep the main subject exactly as it is and remove the entire background, transparent background.', width:1728, height:1152}, kind:'image'})},
+  {id:'upscale4k', name:'4K Upscale', time:'~20 s', blurb:'SeedVR2 to a 2160 short edge. Real pores and lettering, not plastic smoothing.',
+   inputs:[{k:'image',t:'image',label:'Photo'}],
+   run:v=>({url:'/api/image-upscale', body:{image:v.image, size:'4k'}, kind:'image'})},
+  {id:'orbit', name:'360 Orbit', time:'~12 min', blurb:'One photo becomes a full turntable clip that loops (ORB360 LoRA). Three photos (front, 120°, 240°) give a clean back side.',
+   inputs:[{k:'images',t:'images',label:'1 or 3 photos'}],
+   run:v=>({url:'/api/video', body:{mode:'orbit', images:v.images, width:1152, height:768, prompt:''}, kind:'video'})},
+  {id:'charswap', name:'Character Swap', time:'~20 min / 5 s', blurb:'Put a new face, hair and outfit on one person in a clip. Only that person changes: the crowd, the framing, motion and sound stay (SAM mask + akatz Character Swap V1.5).',
+   inputs:[{k:'video',t:'video',label:'Source clip (up to 10 s, one continuous shot)'},{k:'image',t:'image',label:'Character photo'},{k:'description',t:'text',label:'Describe the character (face, hair, clothes)',def:''},{k:'selection',t:'pick',label:'Which person',opts:['largest','leftmost','rightmost'],def:'largest'}],
+   run:v=>({url:'/api/video', body:{mode:'swap', video:v.video, image:v.image, description:v.description, selection:v.selection}, kind:'video'})},
+];
+let APP = null, AVALS = {};
+function paintApps(){
+  $('#appgrid').innerHTML = APPS.map(a => '<div class="appcard' + (APP && APP.id === a.id ? ' active' : '') + '" data-id="' + a.id + '"><div class="aname">' + a.name + '</div><div class="ablurb">' + a.blurb + '</div><div class="atime">' + a.time + '</div></div>').join('');
+}
+function readFileAsData(file){ return new Promise((res, rej)=>{ const rd = new FileReader(); rd.onload = ()=>res(rd.result); rd.onerror = rej; rd.readAsDataURL(file); }); }
+$('#appgrid').addEventListener('click', e=>{
+  const c = e.target.closest('.appcard'); if(!c) return;
+  APP = APPS.find(a => a.id === c.dataset.id); AVALS = {};
+  document.querySelectorAll('#appgrid .appcard').forEach(x=>x.classList.toggle('active', x.dataset.id === APP.id));
+  const f = $('#appform'); f.style.display = ''; $('#agen').style.display = ''; $('#agen').textContent = 'Run ' + APP.name; $('#aerr').textContent = '';
+  f.innerHTML = APP.inputs.map(i => {
+    if(i.t === 'image' || i.t === 'video') return '<label>' + i.label + '</label><input type="file" data-k="' + i.k + '" accept="' + (i.t === 'image' ? 'image/*' : 'video/mp4,video/*') + '">';
+    if(i.t === 'images') return '<label>' + i.label + '</label><input type="file" data-k="' + i.k + '" accept="image/*" multiple>';
+    if(i.t === 'text'){ AVALS[i.k] = i.def || ''; return '<label>' + i.label + '</label><input type="text" data-k="' + i.k + '" value="' + (i.def || '') + '">'; }
+    if(i.t === 'pick'){ AVALS[i.k] = i.def; return '<label>' + i.label + '</label><div class="ratios" data-k="' + i.k + '">' + i.opts.map(o => '<div class="ratio' + (o === i.def ? ' active' : '') + '" data-v="' + o + '">' + o.replace(' view','').replace(' shot','') + '</div>').join('') + '</div>'; }
+    return '';
+  }).join('');
+  const slot = APP.inputs.find(i => i.k === 'image' && i.t === 'image');
+  if(PENDING_IMG && slot){
+    AVALS.image = PENDING_IMG;
+    const inp = f.querySelector('input[data-k="image"]');
+    if(inp) inp.insertAdjacentHTML('afterend', '<div class="hint">Using ' + PENDING_NAME + ' from the viewer. Choose a file above to use a different one.</div>');
+    $('#viewer').innerHTML = '<div class="placeholder">' + APP.name + ' on ' + PENDING_NAME + ': set the options and press Run.</div>';
+    return;
+  }
+  $('#viewer').innerHTML = '<div class="placeholder">' + APP.name + ': add the input and press Run.</div>';
+});
+$('#appform').addEventListener('click', e=>{
+  const b = e.target.closest('.ratio'); if(!b) return;
+  const row = b.parentElement; AVALS[row.dataset.k] = b.dataset.v;
+  row.querySelectorAll('.ratio').forEach(x=>x.classList.toggle('active', x === b));
+});
+$('#appform').addEventListener('input', e=>{ if(e.target.type === 'text') AVALS[e.target.dataset.k] = e.target.value; });
+$('#appform').addEventListener('change', async e=>{
+  const inp = e.target; if(inp.type !== 'file') return;
+  if(inp.multiple){ AVALS[inp.dataset.k] = []; for(const f of inp.files) AVALS[inp.dataset.k].push(await readFileAsData(f)); }
+  else AVALS[inp.dataset.k] = inp.files[0] ? await readFileAsData(inp.files[0]) : null;
+});
+$('#agen').addEventListener('click', async ()=>{
+  if(!APP) return; $('#aerr').textContent = '';
+  for(const i of APP.inputs){ const v = AVALS[i.k]; if(v == null || (Array.isArray(v) && !v.length) || v === ''){ $('#aerr').textContent = 'Add: ' + i.label; return; } }
+  const req = APP.run(AVALS); req.body.label = 'App · ' + APP.name;
+  setBusy(true, 'running ' + APP.name + ' (' + APP.time + ')…');
+  try{
+    const r = await jfetch(req.url, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(req.body)});
+    const d = await r.json();
+    if(!r.ok) throw new Error(d.error || 'the app failed');
+    const meta = APP.name + (d.took ? ' · ' + d.took + 's' : '');
+    if(req.kind === 'video'){ LAST = d.url.split('/').pop(); showVideo(d.url + '?t=' + Date.now(), meta); }
+    else{ ILAST = d.url.split('/').pop(); showImage(d.url + '?t=' + Date.now(), meta); }
+    loadGallery();
+  }catch(e){ $('#aerr').textContent = e.message; $('#viewer').innerHTML = '<div class="placeholder">That run did not finish.</div>'; }
+  setBusy(false);
+});
+
+// ---------------- Cinema Studio (Oct 20 2026) ----------------
+let CINEMA = null, CPICK = {genre:'general', era:'auto', light:'auto', camera:'modern', lens:'clean', aperture:'f4', pacing:'calm'}, CW = 1344, CH = 768, CIMG = null;
+async function loadCinema(){
+  try{ CINEMA = await (await fetch('/api/cinema')).json(); }catch(e){ $('#cerr').textContent = 'could not load Cinema Studio'; return; }
+  for(const g of ['genre','era','light','camera','lens','aperture','pacing']){
+    $('#c' + g).innerHTML = CINEMA[g].map(o => '<div class="ratio' + (o.key === CPICK[g] ? ' active' : '') + '" data-g="' + g + '" data-k="' + o.key + '">' + o.name + '</div>').join('');
+  }
+  paintCuts();
+}
+function paintCuts(){
+  const p = (CINEMA.pacing || []).find(x => x.key === CPICK.pacing); if(!p) return;
+  const secs = parseFloat($('#cseconds').value);
+  const cuts = p.cuts.map(f => f * secs).filter((t, i, a) => i === 0 || (t - a[i-1] >= 0.6 && secs - t >= 0.6));
+  $('#ccuts').textContent = cuts.length + (cuts.length === 1 ? ' shot, one take' : ' shots, cuts at ' + cuts.slice(1).map(t => t.toFixed(1) + 's').join(', '));
+}
+document.querySelectorAll('#cinema-panel .pickrow').forEach(row => row.addEventListener('click', e=>{
+  const b = e.target.closest('.ratio'); if(!b) return;
+  CPICK[b.dataset.g] = b.dataset.k;
+  row.querySelectorAll('.ratio').forEach(x=>x.classList.toggle('active', x.dataset.k === b.dataset.k));
+  if(b.dataset.g === 'pacing') paintCuts();
+}));
+$('#cseconds').addEventListener('input', ()=>{ $('#csecv').textContent = $('#cseconds').value + 's'; if(CINEMA) paintCuts(); });
+$('#cratio').addEventListener('click', e=>{
+  const b = e.target.closest('.ratio'); if(!b) return;
+  document.querySelectorAll('#cratio .ratio').forEach(x=>x.classList.remove('active'));
+  b.classList.add('active'); CW = +b.dataset.w; CH = +b.dataset.h;
+});
+$('#cimgfile').addEventListener('change', e=>{
+  const f = e.target.files[0]; if(!f){ CIMG = null; return; }
+  const rd = new FileReader(); rd.onload = ()=>{ CIMG = rd.result; $('#cimghint').textContent = 'First shot starts on ' + f.name + '.'; }; rd.readAsDataURL(f);
+});
+async function composeCinema(){
+  $('#cerr').textContent = '';
+  const body = Object.assign({}, CPICK, {scene: $('#cscene').value, seconds: parseFloat($('#cseconds').value),
+    shots: $('#cshots').value.split('\n').map(x=>x.trim()).filter(Boolean)});
+  const r = await fetch('/api/cinema/compose', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+  const d = await r.json();
+  if(!r.ok) throw new Error(d.error || 'could not compose');
+  $('#cprompt').value = d.prompt;
+  return d;
+}
+$('#ccompose').addEventListener('click', ()=>{ composeCinema().catch(e=>{ $('#cerr').textContent = e.message; }); });
+$('#cgen').addEventListener('click', async ()=>{
+  $('#cerr').textContent = '';
+  try{
+    if(!$('#cprompt').value.trim()) await composeCinema();
+    const prompt = $('#cprompt').value.trim();
+    setBusy(true, 'rendering the scene on MiniMax H3… one clip, every cut inside it');
+    const r = await jfetch('/api/video', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({mode: CIMG ? 'i2v' : 't2v', prompt, label: 'Cinema · ' + CPICK.pacing + ' · ' + CPICK.genre, scene: $('#cscene').value, width: CW, height: CH,
+        seconds: parseFloat($('#cseconds').value), seed: parseInt($('#cseed').value || '-1'), image: CIMG})});
+    const d = await r.json();
+    if(!r.ok) throw new Error(d.error || 'render failed');
+    LAST = d.url.split('/').pop();
+    showVideo(d.url + '?t=' + Date.now(), 'Cinema Studio · ' + d.seconds + 's · seed ' + d.seed + ' · ' + d.took + 's');
+    loadGallery();
+  }catch(e){ $('#cerr').textContent = e.message; $('#viewer').innerHTML = '<div class="placeholder">That run did not finish.</div>'; }
+  setBusy(false);
+});
+
+// ---------------- Moves (Oct 20 2026) ----------------
+let MOVES = [], MOVE = null, MW = 1344, MH = 768, MIMG = null, MGROUP = 'All';
+async function loadMoves(){
+  try{
+    const r = await fetch('/api/moves'); const d = await r.json();
+    MOVES = d.moves || [];
+  }catch(e){ $('#movegrid').innerHTML = '<div class="hint">could not load moves</div>'; return; }
+  const groups = ['All', ...Array.from(new Set(MOVES.map(m => m.group)))];
+  $('#movefilter').innerHTML = groups.map(g => '<div class="ratio' + (g === MGROUP ? ' active' : '') + '" data-g="' + g + '">' + g + '</div>').join('');
+  paintMoves();
+}
+function paintMoves(){
+  const list = MOVES.filter(m => MGROUP === 'All' || m.group === MGROUP);
+  $('#movegrid').innerHTML = list.map(m =>
+    '<div class="move' + (MOVE && MOVE.id === m.id ? ' active' : '') + '" data-id="' + m.id + '">'
+    + (m.poster ? '<img class="thumb" src="' + m.poster + '" alt="">' : '<div class="nothumb">preview soon</div>')
+    + '<div class="mname">' + m.name + '</div><div class="mgroup">' + m.group + '</div></div>').join('');
+}
+$('#movefilter').addEventListener('click', e=>{
+  const b = e.target.closest('.ratio'); if(!b) return;
+  MGROUP = b.dataset.g;
+  document.querySelectorAll('#movefilter .ratio').forEach(x=>x.classList.toggle('active', x.dataset.g === MGROUP));
+  paintMoves();
+});
+$('#movegrid').addEventListener('click', e=>{
+  const c = e.target.closest('.move'); if(!c) return;
+  MOVE = MOVES.find(m => m.id === c.dataset.id); if(!MOVE) return;
+  document.querySelectorAll('#movegrid .move').forEach(x=>x.classList.toggle('active', x.dataset.id === MOVE.id));
+  $('#mseconds').value = MOVE.seconds; $('#msecv').textContent = MOVE.seconds + 's';
+  $('#moveinfo').style.display = '';
+  $('#moveinfo').innerHTML = '<b>' + MOVE.name + '</b> &middot; ' + MOVE.group + (MOVE.lora ? ' &middot; Camera Motion LoRA ' + MOVE.strength.toFixed(2) : ' &middot; prompt effect')
+    + '<br>' + MOVE.blurb;
+  if(MOVE.preview){
+    $('#viewer').innerHTML = '<video src="' + MOVE.preview + '" controls autoplay loop muted></video><div class="meta">preview &middot; ' + MOVE.name + ' &middot; rendered on this app at 864&times;480</div>';
+  }else{
+    $('#viewer').innerHTML = '<div class="placeholder">' + MOVE.name + ': no preview rendered yet.</div>';
+  }
+});
+$('#mratio').addEventListener('click', e=>{
+  const b = e.target.closest('.ratio'); if(!b) return;
+  document.querySelectorAll('#mratio .ratio').forEach(x=>x.classList.remove('active'));
+  b.classList.add('active'); MW = +b.dataset.w; MH = +b.dataset.h;
+});
+$('#mseconds').addEventListener('input', ()=>{ $('#msecv').textContent = $('#mseconds').value + 's'; });
+$('#mimgfile').addEventListener('change', e=>{
+  const f = e.target.files[0]; if(!f){ MIMG = null; return; }
+  const rd = new FileReader(); rd.onload = ()=>{ MIMG = rd.result; $('#mimghint').textContent = 'Starting on ' + f.name + ' (Image to Video).'; }; rd.readAsDataURL(f);
+});
+$('#mgen').addEventListener('click', async ()=>{
+  $('#merr').textContent = '';
+  if(!MOVE){ $('#merr').textContent = 'Pick a move first.'; return; }
+  const subject = $('#msubject').value.trim();
+  if(!subject){ $('#merr').textContent = 'Describe the subject first.'; return; }
+  setBusy(true, 'rendering ' + MOVE.name + ' on MiniMax H3…');
+  try{
+    const r = await jfetch('/api/video', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({mode: MIMG ? 'i2v' : 't2v', move: MOVE.id, subject, label: 'Move · ' + MOVE.name, width: MW, height: MH,
+        seconds: parseFloat($('#mseconds').value), seed: parseInt($('#mseed').value || '-1'), image: MIMG})});
+    const d = await r.json();
+    if(!r.ok) throw new Error(d.error || 'generation failed');
+    LAST = d.url.split('/').pop();
+    showVideo(d.url + '?t=' + Date.now(), MOVE.name + ' · ' + d.seconds + 's · seed ' + d.seed + ' · ' + d.took + 's');
+    loadGallery();
+  }catch(e){ $('#merr').textContent = e.message; $('#viewer').innerHTML = '<div class="placeholder">That run did not finish.</div>'; }
+  setBusy(false);
+});
+
 // ---------------- Video / Image tabs ----------------
 $('#tabs').addEventListener('click', e=>{
   const b = e.target.closest('.tab'); if(!b || BUSY) return;
-  if(b.dataset.tab === TAB) return;            // re-clicking the live tab does nothing
+  if(b.dataset.tab === TAB) return;            // re-clicking the live tab frees nothing
   document.querySelectorAll('#tabs .tab').forEach(x=>x.classList.remove('active'));
   b.classList.add('active');
   TAB = b.dataset.tab;
   $('#video-panel').style.display = TAB === 'video' ? 'flex' : 'none';
   $('#image-panel').style.display = TAB === 'image' ? 'flex' : 'none';
+  $('#moves-panel').style.display = TAB === 'moves' ? 'flex' : 'none';
+  $('#cinema-panel').style.display = TAB === 'cinema' ? 'flex' : 'none';
+  $('#apps-panel').style.display = TAB === 'apps' ? 'flex' : 'none';
+  $('#audio-panel').style.display = TAB === 'audio' ? 'flex' : 'none';
+  if(TAB === 'audio' && !$('#auloras').children.length) loadAudioLoras();
+  if(TAB === 'apps' && !$('#appgrid').children.length) paintApps();
+  if(TAB === 'cinema' && !CINEMA) loadCinema();
+  if(TAB === 'moves' && !MOVES.length) loadMoves();
   $('#viewer').innerHTML = '<div class="placeholder empty">Nothing generated yet.</div>';
+  if(TAB === 'cinema') $('#viewer').innerHTML = '<video src="/previews/cinema/epic-samurai-dynamic.mp4" poster="/previews/cinema/epic-samurai-dynamic.jpg" controls autoplay loop muted></video><div class="meta">sample &middot; Dynamic pacing, Epic, contre-jour, 35mm anamorphic f/4 &middot; one 8 s render, 7 shots, cuts at 1.2, 3.0, 3.8, 4.9, 5.6 and 6.4 s</div>';
   loadGallery();
 });
 
-// ---------------- Image options ----------------
-
+// ---------------- Krea 2 Turbo ----------------
 $('#iratio').addEventListener('click', e=>{
   const b = e.target.closest('.ratio'); if(!b) return;
   document.querySelectorAll('#iratio .ratio').forEach(x=>x.classList.remove('active'));
@@ -820,7 +1745,7 @@ $('#iratio').addEventListener('click', e=>{
 });
 // In image-to-image the "Source" pill keeps the input's own shape; any other ratio center-crops the input.
 function paintDimHint(){
-  $('#idimhint').textContent = IW === 0 ? 'Keeps the input image\u2019s shape' : IW + ' × ' + IH + (IMODE === 'img2img' ? ', the input is cropped from the center to fit' : '');
+  $('#idimhint').textContent = IW === 0 ? 'Keeps the input image\u2019s shape' : IW + ' \u00d7 ' + IH + (IMODE === 'img2img' ? ', the input is cropped from the center to fit' : '');
 }
 function paintRatioForMode(){
   const i2i = IMODE === 'img2img', src = $('#iratio-src');
@@ -833,17 +1758,28 @@ function paintRatioForMode(){
 let RATIO_TOUCHED = false;
 $('#iratio').addEventListener('click', () => { RATIO_TOUCHED = IMODE === 'img2img' && IW !== 0; });
 
-// The steps slider is log-mapped: position 0..1000 -> 1..4096.
+// Flux2Scheduler takes 1..4096. Linear would put 15 steps under every pixel of
+// travel, so the slider is log-mapped: position 0..1000 -> 4096^(pos/1000).
 const STEP_MAX = 4096;
 const posToSteps = v => Math.max(1, Math.min(STEP_MAX, Math.round(Math.pow(STEP_MAX, v/1000))));
+function estimate(steps){
+  // Measured on this card at 1216x832: 8->15s, 20->27s, 32->42s. Scale by area.
+  const secs = (6 + 1.15 * steps) * (((IW || 1728)*(IH || 1152)) / (1216*832));
+  return secs < 90 ? Math.round(secs) + 's' : (secs/60).toFixed(1) + ' min';
+}
 function paintSteps(){
   const n = posToSteps(+$('#steps').value);
   $('#stepsv').textContent = n;
   const note = n < 12 ? 'fast, fine for stylised work'
              : n < 26 ? 'sharp — the photoreal sweet spot'
              : n < 50 ? 'maximum detail'
-                      : 'well past diminishing returns';
-  $('#stepshint').textContent = note + '. More steps means more detail and a longer render.';
+                      : 'well past diminishing returns on a turbo model';
+  $('#stepshint').innerHTML = '&asymp;' + estimate(n) + ' &middot; ' + note +
+    '. Flux2Scheduler accepts 1&ndash;4096, so the slider is logarithmic &mdash; a linear one ' +
+    'would skip 15 steps per pixel. Measured at 1216&times;832: <b>8</b> waxy skin and mushy ' +
+    'wood (15s) &middot; <b>20</b> real skin texture, wood grain, correct glass refraction ' +
+    '(27s) &middot; <b>32</b> label and surface-grain detail (42s). Stylised work (comic, ' +
+    'poster, illustration) is already excellent at 8.';
 }
 $('#steps').addEventListener('input', paintSteps);
 paintSteps();
@@ -868,20 +1804,30 @@ $('#itmpl').addEventListener('click', ()=>{
 });
 
 $('#igen').addEventListener('click', async ()=>{
+  if(IMODE === 'angles') return runAngles();
   const prompt = $('#iprompt').value.trim();
   $('#ierr').textContent = '';
-  if(!prompt){ $('#ierr').textContent = 'Write a prompt first.'; return; }
-  if(/[A-Z]{3,}/.test(prompt) && !confirm('The prompt still has TEMPLATE PLACEHOLDERS in caps. Generate anyway?')) return;
+  if(!prompt && !(IMODEL === 'moss' && IMODE === 'layout')){ $('#ierr').textContent = 'Write a prompt first.'; return; }
+  if(IMODEL !== 'moss' && /[A-Z]{3,}/.test(prompt) && !confirm('The prompt still has TEMPLATE PLACEHOLDERS in caps. Generate anyway?')) return;
   const steps = posToSteps(+$('#steps').value);
-  const noSrc = IMODE === 'text';
+  const noSrc = IMODE === 'text' || IMODE === 'layout';
   if(!noSrc && !ISRC_DATA && !ISRC_NAME){ $('#ierr').textContent = 'Add an input image first.'; return; }
-  setBusy(true, 'generating image…');
+  const label = {text:'', layout:' (layout)', img2img:' (image to image)', reference:' (style reference)', identity:' (identity)', edit:' (Qwen edit)'}[IMODE];
+  const qwen = IMODEL === 'qwen21', trans = qwen && $('#itrans').checked, mossOn = IMODEL === 'moss';
+  const layout = mossOn && IMODE === 'layout' ? {headline: $('#ml-headline').value, subhead: $('#ml-subhead').value, lines: $('#ml-lines').value,
+    art: $('#ml-art').value, footer: $('#ml-footer').value, url: $('#ml-url').value} : null;
+  if(layout && !Object.values(layout).some(v => v.trim())){ $('#ierr').textContent = 'Fill in at least one layout field.'; return; }
+  setBusy(true, mossOn ? 'generating on MOSS-Image' + label + '… about 16 s'
+    : qwen ? (IMODE === 'edit' ? 'editing with Qwen 2.1' : 'generating on Qwen 2.1') + (trans ? ' (transparent)' : '') + '… about 15 s'
+    : IMODE === 'edit' ? 'editing with Qwen-Image-Edit… about 25 s' : 'generating on Krea 2 Turbo' + label + '… ' + steps + ' steps');
   try{
     const r = await jfetch('/api/image', {method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify({prompt, width: IW || 1728, height: IH || 1152, steps, match_source: IW === 0,
         seed: parseInt($('#iseed').value || '-1'),
+        prompt_weight: $('#pweight').checked,
         mode: IMODE,
-        transparent: $('#itrans').checked,
+        model: IMODEL, transparent: trans, layout,
+        extra_images: qwen && IMODE === 'edit' ? IEXTRA : [],
         image: noSrc ? null : ISRC_DATA,
         source: noSrc ? null : ISRC_NAME,
         denoise: +$('#idenoise').value / 100})});
@@ -892,7 +1838,8 @@ $('#igen').addEventListener('click', async ()=>{
     showImage(d.url + '?t=' + Date.now(),
       d.width + '×' + d.height + ' · ' + d.steps + ' steps · seed ' + d.seed + ' · ' + d.took + 's'
       + (d.mode && d.mode !== 'text' ? ' · ' + d.mode + (d.denoise ? ' ' + d.denoise : '') : '')
-      + (d.transparent ? ' · transparent' : ''));
+      + (d.model === 'qwen21' ? ' · Qwen 2.1' + (d.refs > 1 ? ' · ' + d.refs + ' refs' : '') + (d.transparent ? ' · transparent' : '') : '')
+      + (d.model === 'moss' ? ' · MOSS-Image' : ''));
     loadGallery();
   }catch(e){
     $('#ierr').textContent = e.message;
@@ -901,19 +1848,22 @@ $('#igen').addEventListener('click', async ()=>{
   setBusy(false);
 });
 
-// ---------------- Image modes and the source image ----------------
+// ---------------- Image to Image / Reference, Oct 4 2026 ----------------
 let IMODE = 'text', ISRC_DATA = null, ISRC_NAME = null;
 document.querySelectorAll('#imode .ratio').forEach(el => el.addEventListener('click', () => {
   document.querySelectorAll('#imode .ratio').forEach(x => x.classList.remove('active'));
   el.classList.add('active'); IMODE = el.dataset.mode;
   paintModel();
-  $('#isrc-box').style.display = IMODE === 'text' ? 'none' : 'block';
+  $('#isrc-box').style.display = (IMODE === 'text' || IMODE === 'layout') ? 'none' : 'block';
+  $('#imoss-layout').style.display = (IMODEL === 'moss' && IMODE === 'layout') ? 'block' : 'none';
   $('#idenoise-box').style.display = IMODE === 'img2img' ? 'block' : 'none';
+  $('#iref-note').style.display = IMODE === 'reference' ? 'block' : 'none';
+  $('#iid-note').style.display = IMODE === 'identity' ? 'block' : 'none';
   $('#iedit-note').style.display = IMODE === 'edit' ? 'block' : 'none';
   $('#iratio').style.opacity = IMODE === 'edit' ? '0.4' : '1';
   RATIO_TOUCHED = false; paintRatioForMode();
+  paintAngleMode();
 }));
-
 function setSrcThumb(url){ const t = $('#isrcthumb'); t.src = url; t.style.display = 'block'; }
 $('#isrcfile').addEventListener('change', e => {
   const f = e.target.files[0]; if(!f) return;
@@ -931,16 +1881,52 @@ $('#isrcscreen').addEventListener('click', () => {
 const paintDenoise = () => { $('#idenoisev').textContent = (+$('#idenoise').value / 100).toFixed(2); };
 $('#idenoise').addEventListener('input', paintDenoise); paintDenoise();
 
-// ---------------- Image model ----------------
-// Phase 1 keeps one neutral image model; Phase 3 rewires this picker to the Kie models.
-function paintModel(){}
+// ---------------- Qwen 2.1 model, Oct 9 2026 ----------------
+// Krea 2 Turbo keeps every mode. Qwen 2.1 only has Text and Edit (multi-reference),
+// a fixed 8 steps, and a real-alpha transparent option.
+let IMODEL = 'krea2', IEXTRA = [];
+const KREA_HINT = $('#imodelhint').innerHTML;
+function paintModel(){
+  const qwen = IMODEL === 'qwen21', mossOn = IMODEL === 'moss';
+  document.querySelectorAll('#imode .ratio').forEach(x => {
+    const m = x.dataset.mode;
+    const ok = mossOn ? (m === 'text' || m === 'layout' || m === 'img2img') : m !== 'layout' && (!qwen || m === 'text' || m === 'edit');
+    x.style.display = ok ? '' : 'none';
+  });
+  $('#imodelhint').innerHTML = mossOn
+    ? 'MOSS-Image, INT8, local. 40 steps, CFG 2.5, built for rendering real words.'
+    : qwen
+    ? 'Qwen Image 2.1 + turbo LoRA, INT8, local. 8 steps, no negative prompt.'
+    : KREA_HINT;
+  $('#itrans-box').style.display = qwen ? 'flex' : 'none';
+  $('#iextra-box').style.display = qwen && IMODE === 'edit' ? 'block' : 'none';
+  $('#iqwen-note').style.display = qwen ? 'block' : 'none';
+  $('#imoss-note').style.display = mossOn ? 'block' : 'none';
+  $('#imoss-layout').style.display = (mossOn && IMODE === 'layout') ? 'block' : 'none';
+  const sr = $('#steps').closest('.slider-row');
+  [sr, sr.previousElementSibling, $('#stepshint')].forEach(e => e.style.display = (qwen || mossOn) ? 'none' : '');
+}
 $('#imodel').addEventListener('click', e => {
   const b = e.target.closest('.ratio'); if(!b || BUSY) return;
   document.querySelectorAll('#imodel .ratio').forEach(x => x.classList.remove('active'));
-  b.classList.add('active');
+  b.classList.add('active'); IMODEL = b.dataset.model;
+  if((IMODEL === 'qwen21' && IMODE !== 'text' && IMODE !== 'edit') || (IMODEL !== 'krea2' && IMODE === 'angles')
+     || (IMODEL === 'moss' && IMODE !== 'text' && IMODE !== 'layout' && IMODE !== 'img2img') || (IMODEL !== 'moss' && IMODE === 'layout'))
+    document.querySelector('#imode .ratio[data-mode="text"]').click();
+  else { paintModel(); document.querySelector('#imode .ratio.active').click(); }
+});
+$('#iextra').addEventListener('change', e => {
+  const files = [...e.target.files].slice(0, 9); IEXTRA = [];
+  if(!files.length){ $('#iextrahint').textContent = 'No extra references.'; return; }
+  let n = 0;
+  files.forEach((f, i) => { const rd = new FileReader();
+    rd.onload = () => { IEXTRA[i] = rd.result;
+      if(++n === files.length) $('#iextrahint').textContent = files.length + ' extra reference' + (files.length > 1 ? 's' : '')
+        + ' added (images 2–' + (files.length + 1) + '): ' + files.map(f => f.name).join(', '); };
+    rd.readAsDataURL(f); });
 });
 
-// ---------------- Make it vertical (crop + upscale) ----------------
+// ---------------- Make it vertical (crop + SeedVR2; was RealESRGAN x4 until Oct 5), Oct 4 2026 ----------------
 let VRATIO = '9:16', VSRC = null;
 const VASPECT = {'9:16': 9/16, '4:5': 4/5};
 function cropRect(w, h){
@@ -979,7 +1965,7 @@ $('#vpos').addEventListener('input', paintCrop);
 $('#ivert').addEventListener('click', async ()=>{
   if(!ILAST) return;
   $('#verr').textContent = '';
-  setBusy(true, 'cropping to ' + VRATIO + ' and upscaling…');
+  setBusy(true, 'cropping to ' + VRATIO + ' and upscaling with SeedVR2…');
   try{
     const r = await jfetch('/api/vertical', {method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify({name: ILAST, ratio: VRATIO, pos: +$('#vpos').value / 100})});
@@ -992,7 +1978,7 @@ $('#ivert').addEventListener('click', async ()=>{
 });
 paintCrop();
 
-// ---------------- Upscale: the viewed image or any upload ----------------
+// ---------------- SeedVR2 upscale: the viewed image or any upload, Oct 5 2026 ----------------
 let USIZE = '4k';
 $('#usize').addEventListener('click', e=>{
   const b = e.target.closest('.ratio'); if(!b) return;
@@ -1001,14 +1987,14 @@ $('#usize').addEventListener('click', e=>{
 });
 async function runImageUpscale(body, label){   // NOT runUpscale: that name is the video panel's
   $('#uerr').textContent = '';
-  setBusy(true, 'upscaling ' + label + ' (' + (USIZE === '4k' ? '4K' : '2x') + ')…');
+  setBusy(true, 'upscaling ' + label + ' with SeedVR2 (' + (USIZE === '4k' ? '4K' : '2x') + ')… about 20 s');
   try{
     const r = await jfetch('/api/image-upscale', {method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify(Object.assign({size: USIZE}, body))});
     const d = await r.json();
     if(!r.ok) throw new Error(d.error || 'upscale failed');
     showImage(d.url + '?t=' + Date.now(), d.source[0] + '×' + d.source[1] + ' → ' + d.width + '×' + d.height
-      + ' · ' + d.took + 's');
+      + ' · SeedVR2 · ' + d.took + 's');
     loadGallery();
   }catch(e){ $('#uerr').textContent = e.message; }
   setBusy(false);
@@ -1022,6 +2008,81 @@ $('#iupfile').addEventListener('change', ()=>{
   rd.readAsDataURL(f);
   $('#iupfile').value = '';
 });
+
+// ---------------- Angles, Oct 17 2026 (fal Multiple Angles LoRA on Qwen Edit 2511) ----------------
+// Every combination of the ticked around / height / distance boxes, rendered one at a time.
+const ANG_LABEL = {'front view':'Front','front-right quarter view':'Front-right','right side view':'Right',
+  'back-right quarter view':'Back-right','back view':'Back','back-left quarter view':'Back-left',
+  'left side view':'Left','front-left quarter view':'Front-left','low-angle shot':'low','eye-level shot':'eye level',
+  'elevated shot':'raised','high-angle shot':'high','close-up':'close','medium shot':'medium','wide shot':'wide'};
+const angPicked = id => [...document.querySelectorAll('#' + id + ' .ratio.active')].map(x => x.dataset.v);
+function angleList(){
+  const out = [];
+  angPicked('iang-az').forEach(az => angPicked('iang-el').forEach(el => angPicked('iang-di').forEach(di =>
+    out.push({azimuth:az, elevation:el, distance:di}))));
+  return out;
+}
+function paintAngleCount(){
+  const n = angleList().length;
+  $('#iang-count').textContent = n ? n + ' angle' + (n > 1 ? 's' : '') + ' \u00b7 about ' + Math.max(1, Math.round(n * 23 / 60)) + ' min'
+    : 'Tick at least one box in each row.';
+}
+['iang-az','iang-el','iang-di'].forEach(id => $('#' + id).addEventListener('click', e => {
+  const b = e.target.closest('.ratio'); if(!b) return; b.classList.toggle('active'); paintAngleCount();
+}));
+function setAng(id, vals){ document.querySelectorAll('#' + id + ' .ratio').forEach(x => x.classList.toggle('active', vals.includes(x.dataset.v))); }
+$('#iang-pre').addEventListener('click', e => {
+  const b = e.target.closest('.ratio'); if(!b) return;
+  if(b.dataset.pre === 'turn'){ setAng('iang-az', Object.keys(ANG_LABEL).slice(0, 8)); setAng('iang-el', ['eye-level shot']); setAng('iang-di', ['medium shot']); }
+  if(b.dataset.pre === 'hero'){ setAng('iang-az', ['front view','front-left quarter view','front-right quarter view']); setAng('iang-el', ['low-angle shot','eye-level shot','high-angle shot']); setAng('iang-di', ['medium shot']); }
+  if(b.dataset.pre === 'clear'){ ['iang-az','iang-el','iang-di'].forEach(id => setAng(id, [])); }
+  paintAngleCount();
+});
+function paintAngleMode(){
+  const on = IMODE === 'angles';
+  $('#iangle-box').style.display = on ? 'block' : 'none';
+  const pr = $('#iprompt'), ra = $('#iratio'), sr = $('#steps').closest('.slider-row');
+  [pr, pr.previousElementSibling, ra, ra.previousElementSibling, $('#idimhint')].forEach(e => e.style.display = on ? 'none' : '');
+  if(IMODEL !== 'qwen21' && IMODEL !== 'moss') [sr, sr.previousElementSibling, $('#stepshint')].forEach(e => e.style.display = on ? 'none' : '');
+  $('#igen').textContent = on ? 'Make Angles' : 'Generate Image';
+  if(on) paintAngleCount();
+}
+async function runAngles(){
+  $('#ierr').textContent = '';
+  if(!ISRC_DATA && !ISRC_NAME){ $('#ierr').textContent = 'Add an input image first.'; return; }
+  const list = angleList();
+  if(!list.length){ $('#ierr').textContent = 'Tick at least one box in each row.'; return; }
+  const seed = parseInt($('#iseed').value || '-1');
+  const tag = a => ANG_LABEL[a.azimuth] + ', ' + ANG_LABEL[a.elevation] + ', ' + ANG_LABEL[a.distance];
+  setBusy(true, 'making ' + list.length + ' angle' + (list.length > 1 ? 's' : '') + '…');
+  $('#viewer').innerHTML = '<div class="agrid">' + list.map((a, i) =>
+    '<figure id="ang' + i + '"><div class="pending">' + (i ? 'waiting' : '<div class="spinner"></div>') + '<br>' + tag(a) + '</div></figure>').join('') + '</div>';
+  let done = 0;
+  for(let i = 0; i < list.length; i++){
+    const fig = $('#ang' + i);
+    fig.querySelector('.pending').innerHTML = '<div class="spinner"></div>' + tag(list[i]) + '<br>' + (i + 1) + ' of ' + list.length;
+    try{
+      const r = await jfetch('/api/image', {method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify(Object.assign({mode:'angles', model:'krea2', prompt:'angles', seed,
+          image: ISRC_DATA, source: ISRC_NAME}, list[i]))});
+      const d = await r.json();
+      if(!r.ok) throw new Error(d.error || 'failed');
+      const url = d.url + '?t=' + Date.now();
+      fig.innerHTML = '<img src="' + url + '" alt=""><figcaption>' + tag(list[i]) + ' \u00b7 ' + d.took + 's</figcaption>';
+      fig.onclick = () => { ILAST = d.url.split('/').pop(); paintCrop(); $('#ivert').disabled = $('#iup').disabled = BUSY;
+        showImage(url, d.width + '\u00d7' + d.height + ' \u00b7 ' + tag(list[i]) + ' \u00b7 seed ' + d.seed + ' \u00b7 click Make Angles again for a new batch'); };
+      ILAST = d.url.split('/').pop(); done++;
+    }catch(e){
+      fig.innerHTML = '<div class="pending">' + tag(list[i]) + '<br>failed: ' + e.message + '</div>';
+    }
+  }
+  BUSY = false;
+  $('#gen').disabled = $('#upscale').disabled = $('#igen').disabled = $('#iupload').disabled = false;
+  $('#ivert').disabled = $('#iup').disabled = !ILAST;
+  if(ILAST) paintCrop();
+  loadGallery();
+  if(done < list.length) $('#ierr').textContent = (list.length - done) + ' of ' + list.length + ' angles failed.';
+}
 </script>
 <dialog class="confirm" id="confirm">
   <form method="dialog" class="box">
