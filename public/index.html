@@ -776,17 +776,53 @@ let TAB = 'video', IW = 1728, IH = 1152, ILAST = null, GTAGS = {};
 // sites read exactly as before. The job survives a reload (and a reverse proxy's request
 // timeout); the id is kept in localStorage so a reopened page can pick the result up.
 const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+// ---- Blob upload: files go browser -> Vercel Blob directly, never through a function body ----
+// (Vercel caps function request bodies at ~4.5 MB; reference mode alone can carry 9 images.)
+async function uploadFile(file){
+  const tok = await fetch('/api/upload', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({filename: file.name || 'upload'})
+  }).then(r=>r.json());
+  if(!tok.url) throw new Error(tok.error || 'could not get an upload slot');
+  const put = await fetch(tok.url, {
+    method:'PUT',
+    headers: {'x-api-token': tok.token, 'x-content-type': file.type || 'application/octet-stream'},
+    body: file
+  });
+  if(!put.ok) throw new Error('upload failed (' + put.status + ')');
+  const out = await put.json().catch(()=>({url: tok.url}));
+  return out.url || tok.url;
+}
+
+// ---- Submit: one entry point for every feature -> /api/generate -> poll /api/jobs/<id> ----
+// Kept the same Response-returning shape as the old jfetch so every call site reads as before.
+async function submit(feature, input, prompt){
+  const body = JSON.stringify({feature, input, prompt});
+  const r0 = await fetch('/api/generate', {
+    method:'POST',
+    headers:{'Content-Type':'application/json', 'X-Backlot-Async':'1'},
+    body
+  });
+  if(r0.status !== 202) return r0;              // 400 validation/guard/Kie error comes straight back
+  const {job} = await r0.json();
+  return pollJob(job, feature);
+}
+
+// Legacy alias kept so un-rewired call sites that still pass a URL do not crash; they should move
+// to submit(feature, input, prompt) in Phase 3. (Slow-mo / interpolation now run in the browser.)
 async function jfetch(url, opts){
   const headers = Object.assign({}, opts.headers || {}, {'X-Backlot-Async': '1'});
   const r0 = await fetch(url, Object.assign({}, opts, {headers}));
-  if(r0.status !== 202) return r0;                 // immediate error (400/503) comes straight back
+  if(r0.status !== 202) return r0;
   const {job} = await r0.json();
   return pollJob(job, url);
 }
-async function pollJob(job, url){
-  localStorage.setItem('backlot.job', JSON.stringify({job, url}));
+
+async function pollJob(job, feature){
+  localStorage.setItem('backlot.job', JSON.stringify({job, feature}));
   for(;;){
-    await sleep(1000);
+    await sleep(1500);                          // brief asks for 3s with backoff; 1.5s feels instant
     let r;
     try{ r = await fetch('/api/jobs/' + job); }catch(e){ continue; }   // network blip: keep waiting
     if(r.status === 202){
@@ -803,12 +839,13 @@ addEventListener('load', async () => {
   let saved = null;
   try{ saved = JSON.parse(localStorage.getItem('backlot.job') || 'null'); }catch(e){}
   if(!saved) return;
-  const isVideo = ['/api/video', '/api/upscale', '/api/slowmo'].includes(saved.url);   // Moves also post to /api/video
+  const feat = saved.feature || '';
+  const isVideo = /^(t2v|i2v|refv|orbit|motion|chain|upscale-video|cine-multi)$/.test(feat) || feat === '';
   const tab = document.querySelector('.tab[data-tab="' + (isVideo ? 'video' : 'image') + '"]');
   if(tab && !tab.classList.contains('active')) tab.click();
   setBusy(true, 'picking up the render that was running before the reload…');
   try{
-    const r = await pollJob(saved.job, saved.url);
+    const r = await pollJob(saved.job, feat);
     const d = await r.json();
     if(!r.ok) throw new Error(d.error || 'render failed');
     if(d.url && /\.(mp4|webm|gif)$/i.test(d.url)){
@@ -828,8 +865,11 @@ addEventListener('load', async () => {
 
 function status(){
   fetch('/api/status').then(r=>r.json()).then(d=>{
-    $('#dot').classList.toggle('on', d.ok !== false);
-    $('#statustxt').textContent = d.ok === false ? 'generation disabled' : 'studio ready';
+    const on = d.generationEnabled !== false;
+    $('#dot').classList.toggle('on', on);
+    let txt = on ? 'studio ready' : 'generation disabled';
+    if(on && d.low) txt = '⚠ low credits (' + (d.credits ?? '?') + ')';
+    $('#statustxt').textContent = txt;
   }).catch(()=>{ $('#dot').classList.remove('on'); $('#statustxt').textContent = 'server not reachable'; });
 }
 status(); setInterval(status, 6000);
@@ -974,31 +1014,33 @@ $('#tmpl').addEventListener('click', ()=>{
   applyTemplate(true);
 });
 
-// ---- chain projects -------------------------------------------------------
-// Each project has its own latent folder. Populate the picker from disk and show
-// how many slots it already has, so the user never has to remember the next number.
+// ---- chaining (ported): no latent folders on the hosted path ----
+// "Chain this clip" now continues the last clip from its FINAL FRAME (first_frame_url) — the
+// approximation the port brief allows (PORT_PLAN §4). Project folders went away with the local engine.
 let CHAINS = [];
-async function loadChains(){
-  try{
-    const r = await fetch('/api/chains'); const d = await r.json();
-    CHAINS = d.chains || [];
-    $('#chainlist').innerHTML = CHAINS.map(c=>`<option value="${c.id}">`).join('');
-    chainStatus();
-  }catch(e){ /* non-fatal */ }
+function loadChains(){
+  const cp = $('#chainproject');
+  if(cp){
+    cp.style.display = 'none';
+    const lab = cp.previousElementSibling; if(lab) lab.style.display = 'none';
+    const dl = $('#chainlist'); if(dl) dl.style.display = 'none';
+  }
+  chainStatus();
 }
 function chainStatus(){
-  const id = ($('#chainproject').value || 'h3_context').trim();
-  const c = CHAINS.find(x => x.id === id || x.id === 'h3_context-' + id);
-  const el = $('#chainstatus');
-  if(c && c.slots){
-    el.innerHTML = `<b>${c.id}</b> &mdash; ${c.slots} clip(s) saved, highest is ${c.highest}. `
-                 + `<b>Next clip = ${c.next}.</b>`;
-  } else {
-    el.textContent = `New project "${id}" — nothing saved yet, so start the chain at 1.`;
+  const n = +($('#chainindex').value || 0);
+  const el = $('#chainstatus'); if(!el) return;
+  if(n <= 0){
+    el.innerHTML = 'Chaining off. Set <b>1</b> to start a sequence, <b>2</b> for the next clip &mdash; '
+      + 'each clip continues the previous one <b>from its final frame</b> (hosted frame chaining; '
+      + 'latent folders were a local-engine feature and are gone).';
+  }else if(LAST){
+    el.innerHTML = 'Next clip continues <b>' + LAST + '</b> from its final frame. Generate to chain.';
+  }else{
+    el.textContent = 'Generate one clip first, then chaining picks up its final frame.';
   }
 }
-$('#chainproject').addEventListener('input', chainStatus);
-$('#chainproject').addEventListener('change', chainStatus);
+$('#chainindex').addEventListener('input', chainStatus);
 loadChains();
 
 $('#camera').addEventListener('change', e=>{
@@ -1205,6 +1247,20 @@ function fail(e){
   $('#viewer').innerHTML = '<div class="placeholder">That run did not finish.</div>';
 }
 
+// Map the panel's pixel dims to Kie's aspect_ratio enum (registry accepts these strings).
+function aspectFromDims(w, h){
+  if(w === h) return '1:1';
+  if(w > h){
+    if(h && Math.abs(w/h - 16/9) < 0.06) return '16:9';
+    if(h && Math.abs(w/h - 4/3) < 0.06) return '4:3';
+    if(h && Math.abs(w/h - 21/9) < 0.12) return '21:9';
+    return '16:9';
+  }
+  if(Math.abs(h/w - 16/9) < 0.06) return '9:16';
+  if(Math.abs(h/w - 4/3) < 0.06) return '3:4';
+  return '9:16';
+}
+
 $('#gen').addEventListener('click', async ()=>{
   const prompt = $('#prompt').value.trim();
   $('#err').textContent = '';
@@ -1213,82 +1269,140 @@ $('#gen').addEventListener('click', async ()=>{
   if(VMODE === 'i2v' && !VIMG){ fail('Image to Video needs an input image.'); return; }
   if(VMODE === 'ref' && !VREFS.length){ fail('Reference mode needs at least one image.'); return; }
   if(/[A-Z]{3,}/.test(prompt) && !confirm('The prompt still has TEMPLATE PLACEHOLDERS in caps. Generate anyway?')) return;
-  setBusy(true, VMODEL === 'ltx25' ? 'generating on LTX-2.5… about 2 to 4 min' : VMODE === 'orbit' ? 'rendering a 360 orbit (ORB360)… about 12 min' : 'generating on MiniMax H3… first run loads a 10GB model');
+
+  // Map the legacy `mode` onto a registry feature.
+  let feature = VMODE === 'ref' ? 'refv' : VMODE === 'orbit' ? 'orbit' : VMODE === 'i2v' ? 'i2v' : 't2v';
+
+  setBusy(true, 'uploading input…');
   try{
-    const r = await jfetch('/api/video', {method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({mode:VMODE, prompt, width:VW, height:VH, model: VMODEL, label: VMODEL === 'ltx25' ? 'LTX-2.5 ' + (VMODE === 'i2v' ? 'Image to Video' : 'Video') : undefined,
-        seconds: parseFloat($('#seconds').value), seed: parseInt($('#seed').value || '-1'),
-        image: VMODE === 'i2v' ? VIMG : null,
-        images: (VMODE === 'ref' || VMODE === 'orbit') ? VREFS.map(r => r.data) : null,
-        audios: VMODE === 'ref' ? AREFS.map(r => ({name: r.name, data: r.data})) : null,
-        chain_index: VMODE === 'ref' ? (+$('#chainindex').value || 0) : 0,
-        chain_project: VMODE === 'ref' ? ($('#chainproject').value || 'h3_context') : null,
-        camera_motion: $('#camera').checked,
-        camera_strength: parseFloat($('#camstr').value)})});
+    // Files go browser -> Blob (never through a function body), then we send URLs to Kie.
+    const input = {
+      prompt,
+      aspectRatio: aspectFromDims(VW, VH),
+      duration: Math.round(parseFloat($('#seconds').value)),
+      resolution: '768P',
+    };
+    // Latent chaining -> frame chaining: capture the last clip's final frame and continue from it.
+    const chainOn = VMODE === 'ref' && (+$('#chainindex').value || 0) > 0;
+    if(chainOn){
+      if(!LAST) throw new Error('Chaining needs a clip first: generate one, then set "Chain this clip" to 1.');
+      const lastUrl = await resolveCreationUrl('video', LAST);
+      if(!lastUrl) throw new Error('could not find the last clip to continue from');
+      setBusy(true, 'capturing the last frame of ' + LAST + '…');
+      input.firstFrameUrl = await uploadFile(await lastFrameFile(lastUrl, 'chain-last.png'));
+      feature = 'chain';
+    }
+    if(VMODE === 'i2v' && VIMG && !chainOn){
+      input.firstFrameUrl = await dataUrlToBlobUrl(VIMG, 'start.png');
+    }
+    if(VMODE === 'orbit'){
+      // Orbit hides the prompt box: the repo ships two verbatim orb360 captions.
+      input.prompt = await fetch('/prompts/' + (VREFS.length === 3 ? 'orb360-3photo.txt' : 'orb360-1photo.txt'))
+        .then(r => r.text()).then(t => t.trim());
+      input.duration = 5;
+    }
+    if(VMODE === 'ref' || VMODE === 'orbit'){
+      const urls = [];
+      for(const r of VREFS) urls.push(await dataUrlToBlobUrl(r.data, r.name || 'ref.png'));
+      input.referenceImageUrls = urls;
+    }
+    if(VMODE === 'ref' && AREFS.length){
+      const au = [];
+      for(const r of AREFS) au.push(await dataUrlToBlobUrl(r.data, r.name || 'ref.mp3'));
+      input.referenceAudioUrls = au;   // H3 reference-to-video accepts reference_audio_urls (<=3)
+    }
+
+    setBusy(true, 'generating video…');
+    const r = await submit(feature, input, VMODE === 'orbit' ? input.prompt : prompt);
     const d = await r.json();
     if(!r.ok) throw new Error(d.error || 'generation failed');
     LAST = d.url.split('/').pop();
-    showVideo(d.url + '?t=' + Date.now(), d.seconds + 's · ' + d.frames + ' frames · seed ' + d.seed + ' · ' + d.took + 's'
-      + (d.start_crop && d.start_crop.trimmed ? ' · start image cropped ' + d.start_crop.from.join('×') + ' → ' + d.start_crop.to.join('×') : ''));
+    showVideo(d.url + '?t=' + Date.now(), (d.took ? d.took + 's · ' : '') + d.feature + ' · ' + d.model);
     loadGallery();
   }catch(e){ fail(e.message); }
   setBusy(false);
 });
+
+// Turn a stored data-URL back into a File so uploadFile() can push it to Blob.
+async function dataUrlToBlobUrl(dataUrl, name){
+  const res = await fetch(dataUrl);
+  const blob = await res.blob();
+  const file = new File([blob], name, {type: blob.type || 'application/octet-stream'});
+  return uploadFile(file);
+}
+
+// Grab a video's final frame as a PNG File (chaining: continue from the captured last frame).
+async function lastFrameFile(videoUrl, name){
+  const blob = await fetch(videoUrl).then(r => r.blob());
+  const objUrl = URL.createObjectURL(blob);   // blob: is same-origin, so the canvas stays clean
+  try{
+    const v = document.createElement('video');
+    v.src = objUrl; v.muted = true; v.preload = 'auto';
+    await new Promise((res, rej) => { v.onloadeddata = res; v.onerror = () => rej(new Error('could not load the clip')); });
+    v.currentTime = Math.max(0, (v.duration || 0) - 0.06);
+    await new Promise(res => { v.onseeked = res; setTimeout(res, 2000); });
+    const c = document.createElement('canvas');
+    c.width = v.videoWidth; c.height = v.videoHeight;
+    c.getContext('2d').drawImage(v, 0, 0);
+    const out = await new Promise(res => c.toBlob(res, 'image/png'));
+    if(!out) throw new Error('could not capture the last frame');
+    return new File([out], name, {type:'image/png'});
+  } finally {
+    URL.revokeObjectURL(objUrl);
+  }
+}
 
 async function runUpscale(payload, label){
   $('#err').textContent = '';
   setBusy(true, label);
   try{
-    payload.interpolate = $('#interp').checked;
-    payload.fast = $('#vfast').checked;
-    const r = await jfetch('/api/upscale', {method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify(payload)});
+    // Source is either an already-generated clip (resolve its durable URL) or an uploaded file.
+    let videoUrl = payload.videoUrl;
+    if(!videoUrl && payload.last){
+      videoUrl = await resolveCreationUrl('video', payload.last);
+    }else if(payload.file){
+      videoUrl = await uploadFile(payload.file);
+    }
+    if(!videoUrl) throw new Error('no video supplied');
+    const r = await submit('upscale-video', {videoUrl, upscaleFactor: 2}, '');
     const d = await r.json();
     if(!r.ok) throw new Error(d.error || 'upscale failed');
     LAST = d.url.split('/').pop();
-    showVideo(d.url + '?t=' + Date.now(), 'upscaled (' + (d.upscaler === 'seedvr2' ? 'SeedVR2' : 'ESRGAN') + ') · ' + d.fps + 'fps · ' + d.took + 's');
+    showVideo(d.url + '?t=' + Date.now(), 'upscaled · ' + (d.took ? d.took + 's' : 'done'));
     loadGallery();
   }catch(e){ fail(e.message); }
   setBusy(false);
+}
+
+// Look up the durable Blob URL for a gallery item by its display name.
+async function resolveCreationUrl(kind, name){
+  try{
+    const d = await fetch('/api/gallery?kind=' + kind).then(r=>r.json());
+    const t = (d.tags || {})[name];
+    if(t && t.url) return t.url;
+  }catch(e){}
+  return null;
 }
 
 $('#upscale').addEventListener('click', ()=>{
   if(!LAST){ $('#vidfile').click(); return; }   // nothing generated yet -> browse
-  runUpscale({last: LAST}, 'upscaling the last clip' + ($('#vfast').checked ? ' (fast)…' : ' with SeedVR2… about 5–6 min per 5 s clip'));
+  runUpscale({last: LAST}, 'upscaling the last clip…');
 });
 $('#browse').addEventListener('click', ()=> $('#vidfile').click());
 
-// ---------------- Slow down 2x (RIFE + same fps = double length), Oct 10 2026 ----------------
-async function runSlowmo(payload, label){
-  $('#err').textContent = '';
-  setBusy(true, label);
-  try{
-    const r = await jfetch('/api/slowmo', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
-    const d = await r.json();
-    if(!r.ok) throw new Error(d.error || 'slow-down failed');
-    LAST = d.url.split('/').pop();
-    showVideo(d.url + '?t=' + Date.now(), 'slowed 2× · ' + d.seconds + 's · ' + d.fps + 'fps · ' + (d.audio ? 'audio stretched' : 'no audio') + ' · ' + d.took + 's');
-    loadGallery();
-  }catch(e){ fail(e.message); }
-  setBusy(false);
+// ---- Slow motion / interpolation ----
+// Kie has no frame-interpolation model, so 2× slow-mo runs in the browser (ffmpeg.wasm) per the
+// feasibility note; that lands with the media pipeline. Until then this reports honestly instead
+// of calling a removed endpoint.
+async function runSlowmo(){
+  $('#err').textContent = 'Slow-motion is not wired to a hosted model yet — it will run locally in the browser (Phase 3 media pipeline).';
 }
-$('#slowmo').addEventListener('click', ()=>{
-  if(!LAST){ $('#slowfile').click(); return; }
-  runSlowmo({last: LAST}, 'slowing the clip down 2× (RIFE)… about a minute');
-});
+$('#slowmo').addEventListener('click', ()=> runSlowmo());
 $('#slowbrowse').addEventListener('click', ()=> $('#slowfile').click());
-$('#slowfile').addEventListener('change', e=>{
-  const f = e.target.files[0]; if(!f) return;
-  const rd = new FileReader();
-  rd.onload = () => runSlowmo({video: rd.result, filename: f.name}, 'slowing ' + f.name + ' down 2× (RIFE)… about a minute');
-  rd.readAsDataURL(f);
-  e.target.value = '';
-});
+$('#slowfile').addEventListener('change', e=>{ e.target.value=''; runSlowmo(); });
 $('#vidfile').addEventListener('change', e=>{
   const f = e.target.files[0]; if(!f) return;
-  const rd = new FileReader();
-  rd.onload = () => runUpscale({video: rd.result, filename: f.name}, 'upscaling ' + f.name + ($('#vfast').checked ? ' (fast)…' : ' with SeedVR2… about 5–6 min per 5 s clip'));
-  rd.readAsDataURL(f);
+  runUpscale({file: f}, 'upscaling ' + f.name + '…');
   e.target.value = '';
 });
 
@@ -1298,23 +1412,25 @@ function loadGallery(){
   fetch('/api/gallery?kind=' + (img ? 'image' : aud ? 'audio' : 'video')).then(r=>r.json()).then(d=>{
     const base = img ? '/images/' : aud ? '/audio/' : '/outputs/';
     GTAGS = d.tags || {};
+    // Durable Blob URL when the DB has one; otherwise fall back to the legacy path prefix.
+    const src = f => (GTAGS[f] && GTAGS[f].url) ? GTAGS[f].url : (base + encodeURIComponent(f));
     if(aud){
       $('#gallery').innerHTML = (d.files||[]).map(f => { const t = GTAGS[f]; const q = t && t.score && t.score.overall != null ? '<span class="q">'+(+t.score.overall).toFixed(1)+'</span>' : ''; return '<div class="gitem"><div class="gaud" data-f="'+f+'" title="'+f+'">&#9835; '+(t ? t.label : f.replace(/(-master)?\.mp3$/,''))+q+'</div>' + delBtn(f) + '</div>'; }).join('');
       document.querySelectorAll('#gallery .gaud').forEach(el => el.addEventListener('click', () => {
         const t = GTAGS[el.dataset.f];
-        showAudio(base + encodeURIComponent(el.dataset.f), t ? t.label + (t.seed != null ? ' · seed ' + t.seed : '') : el.dataset.f, t);
+        showAudio(src(el.dataset.f), t ? t.label + (t.seed != null ? ' · seed ' + t.seed : '') : el.dataset.f, t);
       }));
       wireDelete('audio');
       return;
     }
     $('#gallery').innerHTML = (d.files||[]).map(f => { const t = GTAGS[f]; const tt = (t ? t.label + ' · ' : '') + f; return '<div class="gitem">' + (img
-      ? '<img src="'+base+encodeURIComponent(f)+'" loading="lazy" title="'+tt+'" alt="">'
-      : '<video src="'+base+encodeURIComponent(f)+'" muted preload="metadata" title="'+tt+'"></video>') + delBtn(f) + '</div>'; }
+      ? '<img src="'+src(f)+'" loading="lazy" title="'+tt+'" alt="">'
+      : '<video src="'+src(f)+'" muted preload="metadata" title="'+tt+'"></video>') + delBtn(f) + '</div>'; }
     ).join('');
     wireDelete(img ? 'image' : 'video');
     document.querySelectorAll('#gallery video, #gallery img').forEach(v=>{
       v.addEventListener('click', ()=>{
-        const name = decodeURIComponent(v.src.split('/').pop());
+        const name = decodeURIComponent(v.src.split('/').pop().split('?')[0]);
         const t = GTAGS[name];
         const meta = t ? t.label + (t.seed != null ? ' · seed ' + t.seed : '') + (t.prompt ? ' · <span class="browse" id="reuse">reuse prompt</span>' : '') : name;
         if(img){ ILAST = name; showImage(v.src, meta); paintCrop(); }
@@ -1458,9 +1574,9 @@ async function auRun(body, song, resume){
   try{
     let r;
     if(!jid){
-      const r0 = await fetch('/api/audio', {method:'POST', headers:{'Content-Type':'application/json', 'X-Backlot-Async':'1'}, body: JSON.stringify(body)});
-      r = r0;
-      if(r0.status === 202){ jid = (await r0.json()).job; auSave([{jid, body, song}, ...auSaved()]); }
+      // No verified hosted music/SFX model on Kie in this pass (PORT_PLAN §4): the local
+      // YuE2/Stable Audio stack is gone, and the catalogue only verified speech models.
+      throw new Error('Audio has no verified hosted model yet — the panel stays, but generation is off until a song/SFX model is chosen (Kie currently verifies speech models only).');
     }
     if(jid) r = await auPoll(job, jid, body, song);
     if(r.status === 404) throw new Error('lost (the server restarted); the file may still be in the gallery');
@@ -1486,49 +1602,43 @@ $('#autakes').addEventListener('click', e => {
   b.classList.add('active');
 });
 $('#augen').addEventListener('click', () => {
-  $('#auerr').textContent = '';
-  const song = AENGINE === 'song';
-  const body = { engine: AENGINE, mode: AENGINE, seconds: +$('#aulen').value, seed: parseInt($('#auseed').value || '-1') };
-  if(song){
-    body.title = $('#autitle').value.trim();
-    body.style = $('#austyle').value.replace(/\s*\n\s*/g, ' ').trim(); body.lyrics = $('#aulyrics').value.trim();
-    body.plan = document.querySelector('#auplan .ratio.active').dataset.plan;
-    body.loras = [...document.querySelectorAll('#auloras .ratio.active')].map(x => ({file: x.dataset.file}));
-    body.prompt = body.style;
-    if(!body.style){ $('#auerr').textContent = 'Give the song a style line first.'; return; }
-    if(!body.lyrics){ $('#auerr').textContent = 'Write some lyrics, or section tags for an instrumental.'; return; }
-  } else {
-    body.prompt = $('#auprompt').value.trim();
-    if(!body.prompt){ $('#auerr').textContent = 'Describe the sound first.'; return; }
-  }
-  const n = +document.querySelector('#autakes .ratio.active').dataset.n;
-  // seed -1 = a new random seed per take; a fixed seed steps up by one per take so takes still differ
-  for(let i = 0; i < n; i++) auRun(Object.assign({}, body, body.seed >= 0 ? {seed: body.seed + i} : {}), song);
+  $('#auerr').textContent = 'Audio has no verified hosted model yet — generation is off until a song/SFX model is chosen (see PORT_PLAN §4).';
+  return;
 });
 paintAudio();
 
 // ---------------- Apps (Oct 20 2026) ----------------
-// Each app = a saved recipe over an endpoint that already exists. Inputs are declared, the form is built from them.
+// Each app = a saved recipe. `run` is async: it uploads any file inputs to Blob and returns
+// {feature, input, kind} for submit(). Feature ids come from lib/registry.ts.
 const APPS = [
-  {id:'angles', name:'Angles', time:'~25 s', blurb:'Re-shoot a photo from a new camera position: 8 directions, 4 heights, 3 distances (Qwen Multiple Angles LoRA).',
+  {id:'angles', name:'Angles', time:'~25 s', blurb:'Re-shoot a photo from a new camera position: 8 directions, 4 heights, 3 distances (hosted edit model, prompt-driven angle matrix).',
    inputs:[{k:'image',t:'image',label:'Photo'},{k:'azimuth',t:'pick',label:'Direction',opts:['front view','front-right quarter view','right side view','back-right quarter view','back view','back-left quarter view','left side view','front-left quarter view'],def:'front-right quarter view'},
            {k:'elevation',t:'pick',label:'Height',opts:['low-angle shot','eye-level shot','elevated shot','high-angle shot'],def:'eye-level shot'},{k:'distance',t:'pick',label:'Distance',opts:['close-up','medium shot','wide shot'],def:'medium shot'}],
-   run:v=>({url:'/api/image', body:{mode:'angles', image:v.image, azimuth:v.azimuth, elevation:v.elevation, distance:v.distance, width:1728, height:1152}, kind:'image'})},
-  {id:'relight', name:'Relight', time:'~25 s', blurb:'Change the light on any photo: golden hour, window, neon, overcast, studio (Qwen Image Edit).',
+   run:async v=>({feature:'angles', kind:'image', input:{
+     prompt:'Re-shoot this photo of the same subject from a ' + v.distance + ', ' + v.elevation + ', ' + v.azimuth + '. Keep the subject, outfit and background identical; only the camera position changes.',
+     imageUrls:[await dataUrlToBlobUrl(v.image, 'angles.png')]}})},
+  {id:'relight', name:'Relight', time:'~25 s', blurb:'Change the light on any photo: golden hour, window, neon, overcast, studio (hosted instruction edit).',
    inputs:[{k:'image',t:'image',label:'Photo'},{k:'light',t:'pick',label:'Light',opts:['golden hour','soft window light','neon night','overcast daylight','studio softbox','candlelight'],def:'golden hour'}],
-   run:v=>({url:'/api/image', body:{mode:'edit', image:v.image, prompt:'Relight this photo with ' + v.light + ', keep the subject, framing and every detail exactly the same, only the lighting changes.', width:1728, height:1152}, kind:'image'})},
-  {id:'cutout', name:'Cutout', time:'~25 s', blurb:'Lift the subject onto a transparent background as a real RGBA PNG (Qwen Image 2.1).',
+   run:async v=>({feature:'edit', kind:'image', input:{
+     prompt:'Relight this photo with ' + v.light + ', keep the subject, framing and every detail exactly the same, only the lighting changes.',
+     imageUrl: await dataUrlToBlobUrl(v.image, 'relight.png')}})},
+  {id:'cutout', name:'Cutout', time:'~25 s', blurb:'Lift the subject onto a transparent background as a real RGBA PNG (background removal).',
    inputs:[{k:'image',t:'image',label:'Photo'}],
-   run:v=>({url:'/api/image', body:{model:'qwen21', mode:'edit', image:v.image, transparent:true, prompt:'Keep the main subject exactly as it is and remove the entire background, transparent background.', width:1728, height:1152}, kind:'image'})},
-  {id:'upscale4k', name:'4K Upscale', time:'~20 s', blurb:'SeedVR2 to a 2160 short edge. Real pores and lettering, not plastic smoothing.',
+   run:async v=>({feature:'cutout', kind:'image', input:{ imageUrl: await dataUrlToBlobUrl(v.image, 'cutout.png') }})},
+  {id:'upscale4k', name:'4K Upscale', time:'~20 s', blurb:'Upscale to a 4× factor. Real pores and lettering, not plastic smoothing.',
    inputs:[{k:'image',t:'image',label:'Photo'}],
-   run:v=>({url:'/api/image-upscale', body:{image:v.image, size:'4k'}, kind:'image'})},
-  {id:'orbit', name:'360 Orbit', time:'~12 min', blurb:'One photo becomes a full turntable clip that loops (ORB360 LoRA). Three photos (front, 120°, 240°) give a clean back side.',
+   run:async v=>({feature:'upscale-image', kind:'image', input:{ imageUrl: await dataUrlToBlobUrl(v.image, 'up.png'), upscaleFactor: 4 }})},
+  {id:'orbit', name:'360 Orbit', time:'~5 min', blurb:'One photo becomes a full turntable clip that loops (orbit prompt + reference image; the old ORB360 LoRA does not exist hosted — quality varies). Three photos (front, 120°, 240°) give a clean back side.',
    inputs:[{k:'images',t:'images',label:'1 or 3 photos'}],
-   run:v=>({url:'/api/video', body:{mode:'orbit', images:v.images, width:1152, height:768, prompt:''}, kind:'video'})},
-  {id:'charswap', name:'Character Swap', time:'~20 min / 5 s', blurb:'Put a new face, hair and outfit on one person in a clip. Only that person changes: the crowd, the framing, motion and sound stay (SAM mask + akatz Character Swap V1.5).',
+   run:async v=>{
+     const urls = [];
+     for(const d of v.images) urls.push(await dataUrlToBlobUrl(d, 'orbit.png'));
+     const caption = await fetch('/prompts/' + (urls.length === 3 ? 'orb360-3photo.txt' : 'orb360-1photo.txt')).then(r=>r.text());
+     return {feature:'orbit', kind:'video', input:{ prompt: caption.trim(), referenceImageUrls: urls, duration: 5, aspectRatio: '16:9', resolution: '768P' }};
+   }},
+  {id:'charswap', name:'Character Swap', time:'needs a spike', blurb:'Put a new face, hair and outfit on one person in a clip. Candidate hosted paths (Kling motion-control / Wan animate-replace) are not verified yet — see PORT_PLAN §4.',
    inputs:[{k:'video',t:'video',label:'Source clip (up to 10 s, one continuous shot)'},{k:'image',t:'image',label:'Character photo'},{k:'description',t:'text',label:'Describe the character (face, hair, clothes)',def:''},{k:'selection',t:'pick',label:'Which person',opts:['largest','leftmost','rightmost'],def:'largest'}],
-   run:v=>({url:'/api/video', body:{mode:'swap', video:v.video, image:v.image, description:v.description, selection:v.selection}, kind:'video'})},
+   run:async ()=>{ throw new Error('Character Swap has no verified hosted path yet (candidate: kling motion-control or wan animate-replace — needs a live spike before it can ship).'); }},
 ];
 let APP = null, AVALS = {};
 function paintApps(){
@@ -1571,10 +1681,11 @@ $('#appform').addEventListener('change', async e=>{
 $('#agen').addEventListener('click', async ()=>{
   if(!APP) return; $('#aerr').textContent = '';
   for(const i of APP.inputs){ const v = AVALS[i.k]; if(v == null || (Array.isArray(v) && !v.length) || v === ''){ $('#aerr').textContent = 'Add: ' + i.label; return; } }
-  const req = APP.run(AVALS); req.body.label = 'App · ' + APP.name;
   setBusy(true, 'running ' + APP.name + ' (' + APP.time + ')…');
   try{
-    const r = await jfetch(req.url, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(req.body)});
+    const req = await APP.run(AVALS);                 // uploads file inputs to Blob, returns {feature,input,kind}
+    setBusy(true, 'running ' + APP.name + '…');
+    const r = await submit(req.feature, req.input, req.input.prompt || '');
     const d = await r.json();
     if(!r.ok) throw new Error(d.error || 'the app failed');
     const meta = APP.name + (d.took ? ' · ' + d.took + 's' : '');
@@ -1588,7 +1699,7 @@ $('#agen').addEventListener('click', async ()=>{
 // ---------------- Cinema Studio (Oct 20 2026) ----------------
 let CINEMA = null, CPICK = {genre:'general', era:'auto', light:'auto', camera:'modern', lens:'clean', aperture:'f4', pacing:'calm'}, CW = 1344, CH = 768, CIMG = null;
 async function loadCinema(){
-  try{ CINEMA = await (await fetch('/api/cinema')).json(); }catch(e){ $('#cerr').textContent = 'could not load Cinema Studio'; return; }
+  try{ CINEMA = await (await fetch('/data/cinema.json')).json(); }catch(e){ $('#cerr').textContent = 'could not load Cinema Studio'; return; }
   for(const g of ['genre','era','light','camera','lens','aperture','pacing']){
     $('#c' + g).innerHTML = CINEMA[g].map(o => '<div class="ratio' + (o.key === CPICK[g] ? ' active' : '') + '" data-g="' + g + '" data-k="' + o.key + '">' + o.name + '</div>').join('');
   }
@@ -1616,14 +1727,48 @@ $('#cimgfile').addEventListener('change', e=>{
   const f = e.target.files[0]; if(!f){ CIMG = null; return; }
   const rd = new FileReader(); rd.onload = ()=>{ CIMG = rd.result; $('#cimghint').textContent = 'First shot starts on ' + f.name + '.'; }; rd.readAsDataURL(f);
 });
+// Cinema composer — port of server.py compose_cinema_prompt (pure text, no model).
+// Catalog comes from public/data/cinema.json; unknown picker keys fall back to the first entry.
+const _pick = (group, key) => (CINEMA[group] || []).find(x => x.key === key) || (CINEMA[group] || [])[0];
+const _mmss = t => String(Math.floor(t / 60)).padStart(2,'0') + ':' + (t % 60).toFixed(3).padStart(6,'0');
+function composeCinemaPrompt(o){
+  const scene = String(o.scene || '').split(/\s+/).join(' ').trim().replace(/\.$/, '');
+  const seconds = Math.max(2, Math.min(10, parseFloat(o.seconds) || 5));
+  const genre = _pick('genre', o.genre || 'general');
+  const era = _pick('era', o.era || 'auto');
+  const light = _pick('light', o.light || 'auto');
+  const cam = _pick('camera', o.camera || 'modern');
+  const lens = _pick('lens', o.lens || 'clean');
+  const ap = _pick('aperture', o.aperture || 'f4');
+  const pacing = _pick('pacing', o.pacing || 'single');
+  const custom = (o.shots || []).map(x => String(x).split(/\s+/).join(' ').trim().replace(/\.$/, '')).filter(Boolean);
+  let cuts = (pacing.cuts || []).map(f => Math.round(f * seconds * 1000) / 1000);
+  const keep = [cuts[0]];
+  for(const c of cuts.slice(1)){ if(c - keep[keep.length-1] >= 0.6 && seconds - c >= 0.6) keep.push(c); }
+  cuts = keep;
+  const ladder = pacing.ladder || [];
+  const style = [ 'Live-action, cinematic', era.frag, cam.frag, lens.frag, ap.frag, light.frag, genre.look ]
+    .filter(Boolean).join(', ');
+  const parts = [];
+  cuts.forEach((t, i) => {
+    const shot = (CINEMA.shots || {})[ladder[i % ladder.length]] || {frame:'medium', motion:''};
+    const content = custom[i] !== undefined ? custom[i] : (i === 0 ? scene : 'the same scene, ' + scene);
+    if(i === 0) parts.push('[Shot 1] ' + style + ', ' + shot.frame + ' frames ' + content + '. ' + shot.motion);
+    else parts.push('[Shot ' + (i+1) + '] At ' + _mmss(t) + ', the camera cuts to ' + shot.frame + ' of ' + content + '. ' + shot.motion);
+  });
+  const prompt = 'integrated_multimodal_description: ' + parts.join(' ') + '\n\n'
+    + 'overall_soundscape: ' + genre.sound + ', continuous across every cut.\n\n'
+    + 'non_diegetic_music: ' + genre.music;
+  return {prompt, cuts};
+}
 async function composeCinema(){
   $('#cerr').textContent = '';
   const body = Object.assign({}, CPICK, {scene: $('#cscene').value, seconds: parseFloat($('#cseconds').value),
     shots: $('#cshots').value.split('\n').map(x=>x.trim()).filter(Boolean)});
-  const r = await fetch('/api/cinema/compose', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
-  const d = await r.json();
-  if(!r.ok) throw new Error(d.error || 'could not compose');
+  const d = composeCinemaPrompt(body);
+  if(!d.prompt.trim()) throw new Error('describe the scene first');
   $('#cprompt').value = d.prompt;
+  paintCuts();
   return d;
 }
 $('#ccompose').addEventListener('click', ()=>{ composeCinema().catch(e=>{ $('#cerr').textContent = e.message; }); });
@@ -1632,14 +1777,15 @@ $('#cgen').addEventListener('click', async ()=>{
   try{
     if(!$('#cprompt').value.trim()) await composeCinema();
     const prompt = $('#cprompt').value.trim();
-    setBusy(true, 'rendering the scene on MiniMax H3… one clip, every cut inside it');
-    const r = await jfetch('/api/video', {method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({mode: CIMG ? 'i2v' : 't2v', prompt, label: 'Cinema · ' + CPICK.pacing + ' · ' + CPICK.genre, scene: $('#cscene').value, width: CW, height: CH,
-        seconds: parseFloat($('#cseconds').value), seed: parseInt($('#cseed').value || '-1'), image: CIMG})});
+    setBusy(true, 'uploading input…');
+    const input = { prompt, aspectRatio: aspectFromDims(CW, CH), duration: Math.round(parseFloat($('#cseconds').value)) };
+    if(CIMG) input.imageUrls = [await dataUrlToBlobUrl(CIMG, 'scene.png')];
+    setBusy(true, 'rendering the scene… one clip, every cut inside it');
+    const r = await submit('cine-multi', input, prompt);
     const d = await r.json();
     if(!r.ok) throw new Error(d.error || 'render failed');
     LAST = d.url.split('/').pop();
-    showVideo(d.url + '?t=' + Date.now(), 'Cinema Studio · ' + d.seconds + 's · seed ' + d.seed + ' · ' + d.took + 's');
+    showVideo(d.url + '?t=' + Date.now(), 'Cinema Studio \u00b7 ' + (d.took ? d.took + 's' : 'done'));
     loadGallery();
   }catch(e){ $('#cerr').textContent = e.message; $('#viewer').innerHTML = '<div class="placeholder">That run did not finish.</div>'; }
   setBusy(false);
@@ -1649,7 +1795,7 @@ $('#cgen').addEventListener('click', async ()=>{
 let MOVES = [], MOVE = null, MW = 1344, MH = 768, MIMG = null, MGROUP = 'All';
 async function loadMoves(){
   try{
-    const r = await fetch('/api/moves'); const d = await r.json();
+    const r = await fetch('/data/moves.json'); const d = await r.json();
     MOVES = d.moves || [];
   }catch(e){ $('#movegrid').innerHTML = '<div class="hint">could not load moves</div>'; return; }
   const groups = ['All', ...Array.from(new Set(MOVES.map(m => m.group)))];
@@ -1693,20 +1839,38 @@ $('#mimgfile').addEventListener('change', e=>{
   const f = e.target.files[0]; if(!f){ MIMG = null; return; }
   const rd = new FileReader(); rd.onload = ()=>{ MIMG = rd.result; $('#mimghint').textContent = 'Starting on ' + f.name + ' (Image to Video).'; }; rd.readAsDataURL(f);
 });
+// Port of server.py compose_move_prompt (kept verbatim in git history):
+// Camera moves were trained as comma lists, effects use the model's three-field format.
+const CAMERA_TRIGGER = 'camera motion';
+function composeMovePrompt(move, subject){
+  subject = String(subject).split(/\s+/).join(' ').trim().replace(/[.,;]+$/, '');
+  if(move.lora) return CAMERA_TRIGGER + ', ' + subject + ', ' + move.move + ', cinematic lighting, sharp detail, 4k, high quality';
+  return 'integrated_multimodal_description: [Shot 1] ' + subject + '. ' + move.move + '.\n\n'
+       + 'overall_soundscape: natural ambience matching the scene, subtle and continuous.\n\n'
+       + 'non_diegetic_music: none';
+}
+
 $('#mgen').addEventListener('click', async ()=>{
   $('#merr').textContent = '';
   if(!MOVE){ $('#merr').textContent = 'Pick a move first.'; return; }
   const subject = $('#msubject').value.trim();
   if(!subject){ $('#merr').textContent = 'Describe the subject first.'; return; }
-  setBusy(true, 'rendering ' + MOVE.name + ' on MiniMax H3…');
+  setBusy(true, 'uploading input…');
   try{
-    const r = await jfetch('/api/video', {method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({mode: MIMG ? 'i2v' : 't2v', move: MOVE.id, subject, label: 'Move · ' + MOVE.name, width: MW, height: MH,
-        seconds: parseFloat($('#mseconds').value), seed: parseInt($('#mseed').value || '-1'), image: MIMG})});
+    const prompt = composeMovePrompt(MOVE, subject);
+    const input = {
+      prompt,
+      aspectRatio: aspectFromDims(MW, MH),
+      duration: Math.round(parseFloat($('#mseconds').value)),
+      resolution: '768P'
+    };
+    if(MIMG) input.firstFrameUrl = await dataUrlToBlobUrl(MIMG, 'move.png');
+    setBusy(true, 'rendering ' + MOVE.name + '…');
+    const r = await submit(MIMG ? 'i2v' : 'motion', input, prompt);
     const d = await r.json();
     if(!r.ok) throw new Error(d.error || 'generation failed');
     LAST = d.url.split('/').pop();
-    showVideo(d.url + '?t=' + Date.now(), MOVE.name + ' · ' + d.seconds + 's · seed ' + d.seed + ' · ' + d.took + 's');
+    showVideo(d.url + '?t=' + Date.now(), 'Move · ' + MOVE.name + (d.took ? ' · ' + d.took + 's' : ''));
     loadGallery();
   }catch(e){ $('#merr').textContent = e.message; $('#viewer').innerHTML = '<div class="placeholder">That run did not finish.</div>'; }
   setBusy(false);
@@ -1807,39 +1971,44 @@ $('#igen').addEventListener('click', async ()=>{
   if(IMODE === 'angles') return runAngles();
   const prompt = $('#iprompt').value.trim();
   $('#ierr').textContent = '';
-  if(!prompt && !(IMODEL === 'moss' && IMODE === 'layout')){ $('#ierr').textContent = 'Write a prompt first.'; return; }
-  if(IMODEL !== 'moss' && /[A-Z]{3,}/.test(prompt) && !confirm('The prompt still has TEMPLATE PLACEHOLDERS in caps. Generate anyway?')) return;
-  const steps = posToSteps(+$('#steps').value);
+  if(!prompt){ $('#ierr').textContent = 'Write a prompt first.'; return; }
+  if(/[A-Z]{3,}/.test(prompt) && !confirm('The prompt still has TEMPLATE PLACEHOLDERS in caps. Generate anyway?')) return;
+
+  // Map the legacy image `mode` onto a registry feature.
+  const feature = ({text:'t2i', img2img:'img2img', reference:'style', identity:'identity',
+                    edit:'edit', angles:'angles', layout:'layout'})[IMODE] || 't2i';
   const noSrc = IMODE === 'text' || IMODE === 'layout';
   if(!noSrc && !ISRC_DATA && !ISRC_NAME){ $('#ierr').textContent = 'Add an input image first.'; return; }
-  const label = {text:'', layout:' (layout)', img2img:' (image to image)', reference:' (style reference)', identity:' (identity)', edit:' (Qwen edit)'}[IMODE];
-  const qwen = IMODEL === 'qwen21', trans = qwen && $('#itrans').checked, mossOn = IMODEL === 'moss';
-  const layout = mossOn && IMODE === 'layout' ? {headline: $('#ml-headline').value, subhead: $('#ml-subhead').value, lines: $('#ml-lines').value,
-    art: $('#ml-art').value, footer: $('#ml-footer').value, url: $('#ml-url').value} : null;
-  if(layout && !Object.values(layout).some(v => v.trim())){ $('#ierr').textContent = 'Fill in at least one layout field.'; return; }
-  setBusy(true, mossOn ? 'generating on MOSS-Image' + label + '… about 16 s'
-    : qwen ? (IMODE === 'edit' ? 'editing with Qwen 2.1' : 'generating on Qwen 2.1') + (trans ? ' (transparent)' : '') + '… about 15 s'
-    : IMODE === 'edit' ? 'editing with Qwen-Image-Edit… about 25 s' : 'generating on Krea 2 Turbo' + label + '… ' + steps + ' steps');
+
+  setBusy(true, 'uploading input…');
   try{
-    const r = await jfetch('/api/image', {method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({prompt, width: IW || 1728, height: IH || 1152, steps, match_source: IW === 0,
-        seed: parseInt($('#iseed').value || '-1'),
-        prompt_weight: $('#pweight').checked,
-        mode: IMODE,
-        model: IMODEL, transparent: trans, layout,
-        extra_images: qwen && IMODE === 'edit' ? IEXTRA : [],
-        image: noSrc ? null : ISRC_DATA,
-        source: noSrc ? null : ISRC_NAME,
-        denoise: +$('#idenoise').value / 100})});
+    const input = { prompt };
+    if(!noSrc){
+      // Source image: prefer an already-generated one (reuse its Blob URL), else upload the file.
+      if(ISRC_NAME){
+        input.imageUrl = '/images/' + ISRC_NAME;   // gallery item; server resolves it
+      }else if(ISRC_DATA){
+        input.imageUrl = await dataUrlToBlobUrl(ISRC_DATA, 'source.png');
+      }
+      // Image-to-image strength maps onto Kie's `strength` (0..1); identity/edit ignore it.
+      if(IMODE === 'img2img') input.strength = +( +$('#idenoise').value / 100 ).toFixed(2);
+      // Multi-image edit: extra references go alongside the source.
+      if(IMODE === 'edit' && IEXTRA && IEXTRA.length){
+        const urls = [input.imageUrl];
+        for(const e of IEXTRA) urls.push(await dataUrlToBlobUrl(e.data, e.name || 'extra.png'));
+        input.imageUrls = urls;
+      }
+    }
+    if($('#pweight').checked) input.negativePrompt = undefined; // weighting: markers already in prompt; Kie ignores unsupported syntax
+
+    setBusy(true, 'generating image…');
+    const r = await submit(feature, input, prompt);
     const d = await r.json();
     if(!r.ok) throw new Error(d.error || 'generation failed');
     ILAST = d.url.split('/').pop();
     paintCrop();
     showImage(d.url + '?t=' + Date.now(),
-      d.width + '×' + d.height + ' · ' + d.steps + ' steps · seed ' + d.seed + ' · ' + d.took + 's'
-      + (d.mode && d.mode !== 'text' ? ' · ' + d.mode + (d.denoise ? ' ' + d.denoise : '') : '')
-      + (d.model === 'qwen21' ? ' · Qwen 2.1' + (d.refs > 1 ? ' · ' + d.refs + ' refs' : '') + (d.transparent ? ' · transparent' : '') : '')
-      + (d.model === 'moss' ? ' · MOSS-Image' : ''));
+      (d.took ? d.took + 's · ' : '') + (d.model || feature));
     loadGallery();
   }catch(e){
     $('#ierr').textContent = e.message;
@@ -1965,20 +2134,34 @@ $('#vpos').addEventListener('input', paintCrop);
 $('#ivert').addEventListener('click', async ()=>{
   if(!ILAST) return;
   $('#verr').textContent = '';
-  setBusy(true, 'cropping to ' + VRATIO + ' and upscaling with SeedVR2…');
+  setBusy(true, 'cropping to ' + VRATIO + ' in the browser…');
   try{
-    const r = await jfetch('/api/vertical', {method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({name: ILAST, ratio: VRATIO, pos: +$('#vpos').value / 100})});
-    const d = await r.json();
-    if(!r.ok) throw new Error(d.error || 'crop failed');
-    showImage(d.url + '?t=' + Date.now(), d.width + '×' + d.height + ' vertical · ' + d.took + 's');
+    // Crop in the browser (canvas) exactly as previewed, then push the result to Blob.
+    const img = new Image();
+    const srcUrl = (GTAGS[ILAST] && GTAGS[ILAST].url) ? GTAGS[ILAST].url : ('/images/' + ILAST);
+    img.crossOrigin = 'anonymous';
+    await new Promise((res, rej)=>{ img.onload = res; img.onerror = rej; img.src = srcUrl; });
+    const [x, y, cw, ch] = cropRect(img.naturalWidth, img.naturalHeight);
+    const canvas = document.createElement('canvas');
+    const target = VRATIO === '9:16' ? {w:1080, h:1920} : {w:1080, h:1350};
+    canvas.width = target.w; canvas.height = target.h;
+    canvas.getContext('2d').drawImage(img, x, y, cw, ch, 0, 0, target.w, target.h);
+    const blob = await new Promise(res=> canvas.toBlob(res, 'image/png'));
+    if(!blob) throw new Error('could not render the crop');
+    const file = new File([blob], 'vertical-' + VRATIO.replace(':','x') + '.png', {type:'image/png'});
+    const url = await uploadFile(file);
+    // Record it as a creation so it shows up in the gallery.
+    await fetch('/api/gallery/register', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({kind:'image', url, label:'vertical ' + VRATIO})}).catch(()=>{});
+    ILAST = url.split('/').pop().split('?')[0];
+    showImage(url + '?t=' + Date.now(), target.w + '×' + target.h + ' vertical (' + VRATIO + ')');
     loadGallery();
   }catch(e){ $('#verr').textContent = e.message; }
   setBusy(false);
 });
 paintCrop();
 
-// ---------------- SeedVR2 upscale: the viewed image or any upload, Oct 5 2026 ----------------
+// ---------------- Upscale a still (Topaz) ----------------
 let USIZE = '4k';
 $('#usize').addEventListener('click', e=>{
   const b = e.target.closest('.ratio'); if(!b) return;
@@ -1987,14 +2170,17 @@ $('#usize').addEventListener('click', e=>{
 });
 async function runImageUpscale(body, label){   // NOT runUpscale: that name is the video panel's
   $('#uerr').textContent = '';
-  setBusy(true, 'upscaling ' + label + ' with SeedVR2 (' + (USIZE === '4k' ? '4K' : '2x') + ')… about 20 s');
+  setBusy(true, 'upscaling ' + label + ' (' + (USIZE === '4k' ? '4K' : '2x') + ')…');
   try{
-    const r = await jfetch('/api/image-upscale', {method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify(Object.assign({size: USIZE}, body))});
+    let imageUrl = body.imageUrl;
+    if(!imageUrl && body.name) imageUrl = await resolveCreationUrl('image', body.name);
+    if(!imageUrl && body.file) imageUrl = await uploadFile(body.file);
+    if(!imageUrl) throw new Error('pick or upload an image first');
+    const factor = USIZE === '4k' ? 4 : 2;
+    const r = await submit('upscale-image', {imageUrl, upscaleFactor: factor}, '');
     const d = await r.json();
     if(!r.ok) throw new Error(d.error || 'upscale failed');
-    showImage(d.url + '?t=' + Date.now(), d.source[0] + '×' + d.source[1] + ' → ' + d.width + '×' + d.height
-      + ' · SeedVR2 · ' + d.took + 's');
+    showImage(d.url + '?t=' + Date.now(), 'upscaled ×' + factor + (d.took ? ' · ' + d.took + 's' : ''));
     loadGallery();
   }catch(e){ $('#uerr').textContent = e.message; }
   setBusy(false);
@@ -2003,9 +2189,7 @@ $('#iup').addEventListener('click', ()=>{ if(ILAST) runImageUpscale({name: ILAST
 $('#iupload').addEventListener('click', ()=> $('#iupfile').click());
 $('#iupfile').addEventListener('change', ()=>{
   const f = $('#iupfile').files[0]; if(!f) return;
-  const rd = new FileReader();
-  rd.onload = () => runImageUpscale({image: rd.result, filename: f.name}, f.name);
-  rd.readAsDataURL(f);
+  runImageUpscale({file: f}, f.name);
   $('#iupfile').value = '';
 });
 
@@ -2052,26 +2236,28 @@ async function runAngles(){
   if(!ISRC_DATA && !ISRC_NAME){ $('#ierr').textContent = 'Add an input image first.'; return; }
   const list = angleList();
   if(!list.length){ $('#ierr').textContent = 'Tick at least one box in each row.'; return; }
-  const seed = parseInt($('#iseed').value || '-1');
   const tag = a => ANG_LABEL[a.azimuth] + ', ' + ANG_LABEL[a.elevation] + ', ' + ANG_LABEL[a.distance];
+  setBusy(true, 'uploading input…');
+  let srcUrl;
+  if(ISRC_NAME) srcUrl = await resolveCreationUrl('image', ISRC_NAME);
+  else srcUrl = await dataUrlToBlobUrl(ISRC_DATA, 'angles.png');
   setBusy(true, 'making ' + list.length + ' angle' + (list.length > 1 ? 's' : '') + '…');
   $('#viewer').innerHTML = '<div class="agrid">' + list.map((a, i) =>
     '<figure id="ang' + i + '"><div class="pending">' + (i ? 'waiting' : '<div class="spinner"></div>') + '<br>' + tag(a) + '</div></figure>').join('') + '</div>';
-  let done = 0;
   for(let i = 0; i < list.length; i++){
     const fig = $('#ang' + i);
     fig.querySelector('.pending').innerHTML = '<div class="spinner"></div>' + tag(list[i]) + '<br>' + (i + 1) + ' of ' + list.length;
     try{
-      const r = await jfetch('/api/image', {method:'POST', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify(Object.assign({mode:'angles', model:'krea2', prompt:'angles', seed,
-          image: ISRC_DATA, source: ISRC_NAME}, list[i]))});
+      // Angles: prompt the camera position against the source image on the hosted edit model.
+      const prompt = tag(list[i]);
+      const r = await submit('angles', { prompt, imageUrl: srcUrl, angle: list[i] }, prompt);
       const d = await r.json();
       if(!r.ok) throw new Error(d.error || 'failed');
       const url = d.url + '?t=' + Date.now();
-      fig.innerHTML = '<img src="' + url + '" alt=""><figcaption>' + tag(list[i]) + ' \u00b7 ' + d.took + 's</figcaption>';
+      fig.innerHTML = '<img src="' + url + '" alt=""><figcaption>' + tag(list[i]) + ' \u00b7 ' + (d.took ? d.took + 's' : '') + '</figcaption>';
       fig.onclick = () => { ILAST = d.url.split('/').pop(); paintCrop(); $('#ivert').disabled = $('#iup').disabled = BUSY;
-        showImage(url, d.width + '\u00d7' + d.height + ' \u00b7 ' + tag(list[i]) + ' \u00b7 seed ' + d.seed + ' \u00b7 click Make Angles again for a new batch'); };
-      ILAST = d.url.split('/').pop(); done++;
+        showImage(url, tag(list[i])); };
+      ILAST = d.url.split('/').pop();
     }catch(e){
       fig.innerHTML = '<div class="pending">' + tag(list[i]) + '<br>failed: ' + e.message + '</div>';
     }
